@@ -10,155 +10,290 @@ import (
 	"database/sql"
 )
 
-const deleteFile = `-- name: DeleteFile :exec
-DELETE FROM files WHERE filepath = ?
+const createFile = `-- name: CreateFile :exec
+INSERT INTO files (file_id, file_type, length) VALUES (?, ?, ?)
 `
 
-func (q *Queries) DeleteFile(ctx context.Context, filepath string) error {
-	_, err := q.db.ExecContext(ctx, deleteFile, filepath)
+type CreateFileParams struct {
+	FileID   []byte
+	FileType int64
+	Length   int64
+}
+
+func (q *Queries) CreateFile(ctx context.Context, arg CreateFileParams) error {
+	_, err := q.db.ExecContext(ctx, createFile, arg.FileID, arg.FileType, arg.Length)
 	return err
 }
 
-const deletePage = `-- name: DeletePage :exec
-DELETE FROM pages WHERE filepath = ? AND page_num = ? AND page_size_power = ?
+const deleteFile = `-- name: DeleteFile :execrows
+DELETE FROM files WHERE file_id = ?
+`
+
+func (q *Queries) DeleteFile(ctx context.Context, fileID []byte) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteFile, fileID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deletePage = `-- name: DeletePage :execrows
+DELETE FROM pages WHERE file_id = ? AND page_num = ? AND page_size_power = ?
 `
 
 type DeletePageParams struct {
-	Filepath      string
+	FileID        []byte
 	PageNum       int64
 	PageSizePower int64
 }
 
-func (q *Queries) DeletePage(ctx context.Context, arg DeletePageParams) error {
-	_, err := q.db.ExecContext(ctx, deletePage, arg.Filepath, arg.PageNum, arg.PageSizePower)
-	return err
+func (q *Queries) DeletePage(ctx context.Context, arg DeletePageParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deletePage, arg.FileID, arg.PageNum, arg.PageSizePower)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const deletePages = `-- name: DeletePages :exec
-DELETE FROM pages WHERE filepath = ?
+const deletePages = `-- name: DeletePages :execrows
+DELETE FROM pages WHERE file_id = ?
 `
 
-func (q *Queries) DeletePages(ctx context.Context, filepath string) error {
-	_, err := q.db.ExecContext(ctx, deletePages, filepath)
-	return err
+func (q *Queries) DeletePages(ctx context.Context, fileID []byte) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deletePages, fileID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const getFileLength = `-- name: GetFileLength :one
-
-
-
-
-SELECT length FROM files WHERE filepath = ?
+const getDirectoryFiles = `-- name: GetDirectoryFiles :many
+SELECT file_id, parent, name, file_type, length, last_write_at, last_access_at FROM files WHERE parent = ?
 `
 
-// CREATE TABLE files (
+func (q *Queries) GetDirectoryFiles(ctx context.Context, parent []byte) ([]File, error) {
+	rows, err := q.db.QueryContext(ctx, getDirectoryFiles, parent)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []File
+	for rows.Next() {
+		var i File
+		if err := rows.Scan(
+			&i.FileID,
+			&i.Parent,
+			&i.Name,
+			&i.FileType,
+			&i.Length,
+			&i.LastWriteAt,
+			&i.LastAccessAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getFile = `-- name: GetFile :one
+
+
+
+
+SELECT file_id, parent, name, file_type, length, last_write_at, last_access_at FROM files WHERE file_id = ?
+`
+
+// CREATE TABLE IF NOT EXISTS files (
 //
-//	filepath        VARCHAR(2048) PRIMARY KEY,
-//	length          INTEGER       NOT NULL
+//	file_id         BLOB          PRIMARY KEY,
+//	parent          BLOB          NOT NULL,
+//	name            VARCHAR(4096) NOT NULL,
+//	file_type       TINYINT       NOT NULL,
+//	length          INTEGER       NOT NULL,
+//	last_write_at   INTEGER, -- unix timestamp in millis
+//	last_access_at  INTEGER -- unix timestamp in millis
 //
 // );
-// CREATE INDEX files_last_access_at ON files (last_access_at);
-// CREATE TABLE pages (
+// CREATE INDEX IF NOT EXISTS files_last_access_at ON files (last_access_at);
+// CREATE INDEX IF NOT EXISTS files_parent ON files (parent);
+// CREATE TABLE IF NOT EXISTS pages (
 //
-//	filepath        VARCHAR(2048) NOT NULL,
+//	file_id         BLOB          NOT NULL,
 //	page_num        INTEGER       NOT NULL,
 //	page_size_power TINYINT       NOT NULL,
 //	data            BLOB          NOT NULL,
 //	last_write_at   INTEGER, -- unix timestamp in millis
 //	last_read_at    INTEGER, -- unix timestamp in millis
-//	last_acceess_at INTEGER VIRTUAL ALWAYS AS (GREATEST(last_write_at, last_read_at)) STORED,
-//	PRIMARY KEY (filepath, page_num, page_size_power)
+//	last_acceess_at INTEGER GENERATED ALWAYS AS (GREATEST(last_write_at, last_read_at)) VIRTUAL,
+//	PRIMARY KEY (file_id, page_num, page_size_power)
 //
 // )
-// CREATE INDEX pages_last_access_at ON pages (last_access_at);
-func (q *Queries) GetFileLength(ctx context.Context, filepath string) (int64, error) {
-	row := q.db.QueryRowContext(ctx, getFileLength, filepath)
-	var length int64
-	err := row.Scan(&length)
-	return length, err
+// CREATE INDEX IF NOT EXISTS pages_last_access_at ON pages (last_access_at);
+func (q *Queries) GetFile(ctx context.Context, fileID []byte) (File, error) {
+	row := q.db.QueryRowContext(ctx, getFile, fileID)
+	var i File
+	err := row.Scan(
+		&i.FileID,
+		&i.Parent,
+		&i.Name,
+		&i.FileType,
+		&i.Length,
+		&i.LastWriteAt,
+		&i.LastAccessAt,
+	)
+	return i, err
+}
+
+const getFileInDirectory = `-- name: GetFileInDirectory :one
+SELECT file_id, parent, name, file_type, length, last_write_at, last_access_at FROM files WHERE parent = ? AND name = ?
+`
+
+type GetFileInDirectoryParams struct {
+	Parent []byte
+	Name   string
+}
+
+func (q *Queries) GetFileInDirectory(ctx context.Context, arg GetFileInDirectoryParams) (File, error) {
+	row := q.db.QueryRowContext(ctx, getFileInDirectory, arg.Parent, arg.Name)
+	var i File
+	err := row.Scan(
+		&i.FileID,
+		&i.Parent,
+		&i.Name,
+		&i.FileType,
+		&i.Length,
+		&i.LastWriteAt,
+		&i.LastAccessAt,
+	)
+	return i, err
 }
 
 const getPage = `-- name: GetPage :one
-SELECT data FROM pages WHERE filepath = ? AND page_num = ? AND page_size_power = ?
+SELECT data FROM pages WHERE file_id = ? AND page_num = ? AND page_size_power = ?
 `
 
 type GetPageParams struct {
-	Filepath      string
+	FileID        []byte
 	PageNum       int64
 	PageSizePower int64
 }
 
 func (q *Queries) GetPage(ctx context.Context, arg GetPageParams) ([]byte, error) {
-	row := q.db.QueryRowContext(ctx, getPage, arg.Filepath, arg.PageNum, arg.PageSizePower)
+	row := q.db.QueryRowContext(ctx, getPage, arg.FileID, arg.PageNum, arg.PageSizePower)
 	var data []byte
 	err := row.Scan(&data)
 	return data, err
 }
 
-const updatePageLastReadAt = `-- name: UpdatePageLastReadAt :exec
-UPDATE pages SET last_read_at = ? WHERE filepath = ? AND page_num = ? AND page_size_power = ?
+const renameFile = `-- name: RenameFile :exec
+UPDATE files SET file_id = ?, parent = ? WHERE file_id = ?
+`
+
+type RenameFileParams struct {
+	FileID   []byte
+	Parent   []byte
+	FileID_2 []byte
+}
+
+func (q *Queries) RenameFile(ctx context.Context, arg RenameFileParams) error {
+	_, err := q.db.ExecContext(ctx, renameFile, arg.FileID, arg.Parent, arg.FileID_2)
+	return err
+}
+
+const renamePage = `-- name: RenamePage :exec
+UPDATE pages SET file_id = ? WHERE file_id = ?
+`
+
+type RenamePageParams struct {
+	FileID   []byte
+	FileID_2 []byte
+}
+
+func (q *Queries) RenamePage(ctx context.Context, arg RenamePageParams) error {
+	_, err := q.db.ExecContext(ctx, renamePage, arg.FileID, arg.FileID_2)
+	return err
+}
+
+const updatePageLastReadAt = `-- name: UpdatePageLastReadAt :execrows
+UPDATE pages SET last_read_at = ? WHERE file_id = ? AND page_num = ? AND page_size_power = ?
 `
 
 type UpdatePageLastReadAtParams struct {
 	LastReadAt    sql.NullInt64
-	Filepath      string
+	FileID        []byte
 	PageNum       int64
 	PageSizePower int64
 }
 
-func (q *Queries) UpdatePageLastReadAt(ctx context.Context, arg UpdatePageLastReadAtParams) error {
-	_, err := q.db.ExecContext(ctx, updatePageLastReadAt,
+func (q *Queries) UpdatePageLastReadAt(ctx context.Context, arg UpdatePageLastReadAtParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updatePageLastReadAt,
 		arg.LastReadAt,
-		arg.Filepath,
+		arg.FileID,
 		arg.PageNum,
 		arg.PageSizePower,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const updatePageLastWriteAt = `-- name: UpdatePageLastWriteAt :exec
-UPDATE pages SET last_write_at = ? WHERE filepath = ? AND page_num = ? AND page_size_power = ?
+const updatePageLastWriteAt = `-- name: UpdatePageLastWriteAt :execrows
+UPDATE pages SET last_write_at = ? WHERE file_id = ? AND page_num = ? AND page_size_power = ?
 `
 
 type UpdatePageLastWriteAtParams struct {
 	LastWriteAt   sql.NullInt64
-	Filepath      string
+	FileID        []byte
 	PageNum       int64
 	PageSizePower int64
 }
 
-func (q *Queries) UpdatePageLastWriteAt(ctx context.Context, arg UpdatePageLastWriteAtParams) error {
-	_, err := q.db.ExecContext(ctx, updatePageLastWriteAt,
+func (q *Queries) UpdatePageLastWriteAt(ctx context.Context, arg UpdatePageLastWriteAtParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updatePageLastWriteAt,
 		arg.LastWriteAt,
-		arg.Filepath,
+		arg.FileID,
 		arg.PageNum,
 		arg.PageSizePower,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const upsertFileLength = `-- name: UpsertFileLength :exec
-INSERT INTO files (filepath, length) VALUES (?, ?)
-ON CONFLICT (filepath) DO UPDATE SET length = excluded.length
+INSERT INTO files (file_id, length) VALUES (?, ?)
+ON CONFLICT (file_id) DO UPDATE SET length = excluded.length
 `
 
 type UpsertFileLengthParams struct {
-	Filepath string
-	Length   int64
+	FileID []byte
+	Length int64
 }
 
 func (q *Queries) UpsertFileLength(ctx context.Context, arg UpsertFileLengthParams) error {
-	_, err := q.db.ExecContext(ctx, upsertFileLength, arg.Filepath, arg.Length)
+	_, err := q.db.ExecContext(ctx, upsertFileLength, arg.FileID, arg.Length)
 	return err
 }
 
 const upsertPage = `-- name: UpsertPage :exec
-INSERT INTO pages (filepath, page_num, page_size_power, last_write_at, data)
+INSERT INTO pages (file_id, page_num, page_size_power, last_write_at, data)
 VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (file_id, page_num, page_size_power) DO UPDATE SET
+    last_write_at = excluded.last_write_at,
+    data = excluded.data
 `
 
 type UpsertPageParams struct {
-	Filepath      string
+	FileID        []byte
 	PageNum       int64
 	PageSizePower int64
 	LastWriteAt   sql.NullInt64
@@ -167,7 +302,7 @@ type UpsertPageParams struct {
 
 func (q *Queries) UpsertPage(ctx context.Context, arg UpsertPageParams) error {
 	_, err := q.db.ExecContext(ctx, upsertPage,
-		arg.Filepath,
+		arg.FileID,
 		arg.PageNum,
 		arg.PageSizePower,
 		arg.LastWriteAt,

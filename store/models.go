@@ -9,12 +9,17 @@ import (
 )
 
 type File struct {
-	Filepath string
-	Length   int64
+	FileID       []byte
+	Parent       []byte
+	Name         string
+	FileType     int64
+	Length       int64
+	LastWriteAt  sql.NullInt64
+	LastAccessAt sql.NullInt64
 }
 
 type Page struct {
-	Filepath      string
+	FileID        []byte
 	PageNum       int64
 	PageSizePower int64
 	Data          []byte

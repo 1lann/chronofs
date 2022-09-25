@@ -2,17 +2,23 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
+	"os"
+	"os/signal"
+	"os/user"
 	"path/filepath"
+	"runtime/pprof"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/bep/debounce"
+	"github.com/google/uuid"
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
+	"github.com/jmoiron/sqlx"
+	_ "modernc.org/sqlite"
 )
 
 type LoopbackFileHandle interface {
@@ -106,7 +112,7 @@ func (f *MinecraftFile) Read(ctx context.Context, data []byte, off int64) (fuse.
 	return f.LoopbackFileHandle.Read(ctx, data, off)
 }
 
-// MinecraftNode emulates Windows FS semantics, which forbids deleting open files.
+// MinecraftNode
 type MinecraftNode struct {
 	// MinecraftNode inherits most functionality from LoopbackNode.
 	fs.LoopbackNode
@@ -114,6 +120,27 @@ type MinecraftNode struct {
 	mu        sync.Mutex
 	openCount int
 }
+
+// var _ = (NodeStatfser)((*LoopbackNode)(nil))
+// var _ = (NodeStatfser)((*LoopbackNode)(nil))
+// var _ = (NodeGetattrer)((*LoopbackNode)(nil))
+// var _ = (NodeGetxattrer)((*LoopbackNode)(nil))
+// var _ = (NodeSetxattrer)((*LoopbackNode)(nil))
+// var _ = (NodeRemovexattrer)((*LoopbackNode)(nil))
+// var _ = (NodeListxattrer)((*LoopbackNode)(nil))
+// var _ = (NodeReadlinker)((*LoopbackNode)(nil))
+// var _ = (NodeOpener)((*LoopbackNode)(nil))
+// var _ = (NodeCopyFileRanger)((*LoopbackNode)(nil))
+// var _ = (NodeLookuper)((*LoopbackNode)(nil))
+// var _ = (NodeOpendirer)((*LoopbackNode)(nil))
+// var _ = (NodeReaddirer)((*LoopbackNode)(nil))
+// var _ = (NodeMkdirer)((*LoopbackNode)(nil))
+// var _ = (NodeMknoder)((*LoopbackNode)(nil))
+// var _ = (NodeLinker)((*LoopbackNode)(nil))
+// var _ = (NodeSymlinker)((*LoopbackNode)(nil))
+// var _ = (NodeUnlinker)((*LoopbackNode)(nil))
+// var _ = (NodeRmdirer)((*LoopbackNode)(nil))
+// var _ = (NodeRenamer)((*LoopbackNode)(nil))
 
 var _ = (fs.NodeOpener)((*MinecraftNode)(nil))
 
@@ -187,24 +214,60 @@ func newMinecraftNode(rootData *fs.LoopbackRoot, parent *fs.Inode, name string, 
 // ExampleLoopbackReuse shows how to build a file system on top of the
 // loopback file system.
 func main() {
-	mntDir := "/home/jason/Workspace/testserver/serverdata"
-	origDir := "/home/jason/Workspace/testserver/origdata"
+	// mntDir := "/home/jason/Workspace/testserver/serverdata"
+	// origDir := "/home/jason/Workspace/testserver/origdata"
+	mntDir := "./mountpoint/x"
 
-	rootData := &fs.LoopbackRoot{
-		NewNode: newMinecraftNode,
-		Path:    origDir,
+	ctx := context.Background()
+	db, err := sqlx.ConnectContext(ctx, "sqlite", "file:./test.db?cache=shared")
+	if err != nil {
+		log.Fatalln(err)
 	}
 
-	sec := time.Second
+	timeout := time.Hour
 	opts := &fs.Options{
-		AttrTimeout:  &sec,
-		EntryTimeout: &sec,
+		AttrTimeout:  &timeout,
+		EntryTimeout: &timeout,
+		Logger:       log.Default(),
 	}
 
-	server, err := fs.Mount(mntDir, newMinecraftNode(rootData, nil, "", nil), opts)
+	opts.MountOptions.Debug = false
+
+	currentUser, err := user.Current()
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	client := NewSQLBackedClient(10000, 1e9, currentUser, db, 19)
+
+	server, err := fs.Mount(mntDir, &Node{
+		fileID:   uuid.UUID{},
+		fileType: FileTypeDirectory,
+		client:   client,
+	}, opts)
 	if err != nil {
 		log.Fatalf("Mount fail: %v\n", err)
 	}
-	fmt.Printf("files under %s cannot be deleted if they are opened", mntDir)
+	log.Printf("files under %s cannot be deleted if they are opened", mntDir)
+	f, err := os.Create("./cpuprofile")
+	if err != nil {
+		log.Fatal("could not create CPU profile: ", err)
+	}
+	defer f.Close() // error handling omitted for example
+	if err := pprof.StartCPUProfile(f); err != nil {
+		log.Fatal("could not start CPU profile: ", err)
+	}
+
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt)
+	go func() {
+		for range c {
+			// sig is a ^C, handle it
+			log.Println("closing")
+			pprof.StopCPUProfile()
+			os.Exit(0)
+		}
+	}()
+
 	server.Wait()
 }
