@@ -2,11 +2,12 @@ package main
 
 import (
 	"container/list"
+	"log"
+	"runtime/debug"
 	"sort"
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/hanwen/go-fuse/v2/fuse"
 )
 
@@ -18,8 +19,8 @@ const (
 )
 
 type FileMeta struct {
-	FileID     uuid.UUID
-	Parent     uuid.UUID
+	FileID     int64
+	Parent     int64
 	Name       string
 	Length     int64
 	FileType   FileType
@@ -40,8 +41,8 @@ func (f *FileMeta) Mode() uint32 {
 
 type FileMetaPool struct {
 	mu            sync.Mutex
-	files         map[uuid.UUID]*FileMeta
-	filesByParent map[uuid.UUID]map[string]uuid.UUID
+	files         map[int64]*FileMeta
+	filesByParent map[int64]map[string]int64
 	dirtyFiles    []*FileMeta
 	dll           *list.List
 	numFiles      uint64
@@ -50,14 +51,14 @@ type FileMetaPool struct {
 
 func NewFileMetaPool(maxFiles uint64) *FileMetaPool {
 	return &FileMetaPool{
-		files:         make(map[uuid.UUID]*FileMeta),
-		filesByParent: make(map[uuid.UUID]map[string]uuid.UUID),
+		files:         make(map[int64]*FileMeta),
+		filesByParent: make(map[int64]map[string]int64),
 		dll:           list.New(),
 		maxFiles:      maxFiles,
 	}
 }
 
-func (p *FileMetaPool) TombstoneFile(fileID uuid.UUID) error {
+func (p *FileMetaPool) TombstoneFile(fileID int64) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -84,22 +85,22 @@ func (p *FileMetaPool) forgetFile(file *FileMeta) {
 	p.numFiles--
 }
 
-func (p *FileMetaPool) LookupFileInDirectory(name string, dir uuid.UUID) (uuid.UUID, error) {
+func (p *FileMetaPool) LookupFileInDirectory(name string, dir int64) (int64, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	files, found := p.filesByParent[dir]
 	if !found {
-		return uuid.UUID{}, ErrNotFound
+		return 0, ErrNotFound
 	}
 
 	result, found := files[name]
 	if !found {
-		return uuid.UUID{}, ErrNotFound
+		return 0, ErrNotFound
 	}
 
 	if p.files[result].tombstone {
-		return uuid.UUID{}, ErrTombstoned
+		return 0, ErrTombstoned
 	}
 
 	return result, nil
@@ -139,10 +140,10 @@ func (p *FileMetaPool) AddFile(meta FileMeta, dirty bool) error {
 	return nil
 }
 
-func (p *FileMetaPool) associateParent(parentID uuid.UUID, fileID uuid.UUID) {
+func (p *FileMetaPool) associateParent(parentID int64, fileID int64) {
 	parent, ok := p.filesByParent[parentID]
 	if !ok {
-		parent = make(map[string]uuid.UUID)
+		parent = make(map[string]int64)
 		p.filesByParent[parentID] = parent
 	}
 	parent[p.files[fileID].Name] = fileID
@@ -155,7 +156,7 @@ func (p *FileMetaPool) disassociateParent(file *FileMeta) {
 	}
 }
 
-func (p *FileMetaPool) ChangeParent(fileID uuid.UUID, newParent uuid.UUID) error {
+func (p *FileMetaPool) ChangeParent(fileID int64, newParent int64) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -176,7 +177,7 @@ func (p *FileMetaPool) ChangeParent(fileID uuid.UUID, newParent uuid.UUID) error
 	return nil
 }
 
-func (p *FileMetaPool) ChangeName(fileID uuid.UUID, newName string) error {
+func (p *FileMetaPool) ChangeName(fileID int64, newName string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -198,14 +199,14 @@ func (p *FileMetaPool) ChangeName(fileID uuid.UUID, newName string) error {
 	return nil
 }
 
-func (p *FileMetaPool) GetFile(fileID uuid.UUID) (FileMeta, error) {
+func (p *FileMetaPool) GetFile(fileID int64) (FileMeta, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if fileID == (uuid.UUID{}) {
+	if fileID >= 0 && fileID <= 2 {
 		return FileMeta{
-			FileID:     uuid.UUID{},
-			Parent:     uuid.UUID{},
+			FileID:     0,
+			Parent:     2,
 			Name:       "",
 			Length:     0,
 			FileType:   FileTypeDirectory,
@@ -228,7 +229,9 @@ func (p *FileMetaPool) GetFile(fileID uuid.UUID) (FileMeta, error) {
 	return *file, nil
 }
 
-func (p *FileMetaPool) UpdateLength(fileID uuid.UUID, fileLength int64) error {
+func (p *FileMetaPool) UpdateLength(fileID int64, fileLength int64) error {
+	log.Printf("updating file length on %q to %d due to %s", fileID, fileLength, string(debug.Stack()))
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -297,7 +300,7 @@ func (p *FileMetaPool) makeSpace() bool {
 	return true
 }
 
-func (p *FileMetaPool) Union(dirID uuid.UUID, remoteFiles []FileMeta) []FileMeta {
+func (p *FileMetaPool) Union(dirID int64, remoteFiles []FileMeta) []FileMeta {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -323,6 +326,9 @@ func (p *FileMetaPool) Union(dirID uuid.UUID, remoteFiles []FileMeta) []FileMeta
 
 	for name, file := range pendingFiles {
 		if _, ok := remoteFileMap[name]; !ok {
+			if p.files[file].tombstone {
+				continue
+			}
 			resultingFiles = append(resultingFiles, *p.files[file])
 		}
 	}

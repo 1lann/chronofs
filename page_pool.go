@@ -6,7 +6,6 @@ import (
 	"sync"
 
 	"github.com/cockroachdb/errors"
-	"github.com/google/uuid"
 )
 
 var ErrNotFound = fs.ErrNotExist
@@ -16,7 +15,7 @@ var ErrNotSupported = fs.ErrInvalid
 var ErrTombstoned = errors.New("tombstoned")
 
 type PageKey struct {
-	FileID  uuid.UUID
+	FileID  int64
 	PageNum uint32
 }
 
@@ -47,7 +46,7 @@ func NewPagePool(maxSize uint64, pagePower uint8) *PagePool {
 	}
 }
 
-func (p *PagePool) TombstoneFile(fileID uuid.UUID, fileLength uint64) {
+func (p *PagePool) TombstoneFile(fileID int64, fileLength uint64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -154,7 +153,7 @@ func (p *PagePool) WritePage(key PageKey, minLength uint64, f func(data []byte))
 			return ErrTooMuchDirt
 		}
 
-		p.size += minLength - uint64(len(page.Data))
+		p.size += (minLength - uint64(len(page.Data)))
 
 		origPage := page.Data
 		page.Data = make([]byte, minLength)

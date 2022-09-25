@@ -3,18 +3,14 @@ package main
 import (
 	"context"
 	"log"
-	"os"
-	"os/signal"
 	"os/user"
 	"path/filepath"
-	"runtime/pprof"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/bep/debounce"
-	"github.com/google/uuid"
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
 	"github.com/jmoiron/sqlx"
@@ -224,24 +220,25 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	timeout := time.Hour
+	timeout := time.Second
 	opts := &fs.Options{
 		AttrTimeout:  &timeout,
 		EntryTimeout: &timeout,
 		Logger:       log.Default(),
 	}
 
-	opts.MountOptions.Debug = false
+	opts.MountOptions.Debug = true
+	opts.MountOptions.DisableXAttrs = true
 
 	currentUser, err := user.Current()
 	if err != nil {
 		log.Fatalln(err)
 	}
 
-	client := NewSQLBackedClient(10000, 1e9, currentUser, db, 19)
+	client := NewSQLBackedClient(10000, 1e9, currentUser, db, 12)
 
 	server, err := fs.Mount(mntDir, &Node{
-		fileID:   uuid.UUID{},
+		fileID:   2,
 		fileType: FileTypeDirectory,
 		client:   client,
 	}, opts)
@@ -249,25 +246,25 @@ func main() {
 		log.Fatalf("Mount fail: %v\n", err)
 	}
 	log.Printf("files under %s cannot be deleted if they are opened", mntDir)
-	f, err := os.Create("./cpuprofile")
-	if err != nil {
-		log.Fatal("could not create CPU profile: ", err)
-	}
-	defer f.Close() // error handling omitted for example
-	if err := pprof.StartCPUProfile(f); err != nil {
-		log.Fatal("could not start CPU profile: ", err)
-	}
+	// f, err := os.Create("./cpuprofile")
+	// if err != nil {
+	// 	log.Fatal("could not create CPU profile: ", err)
+	// }
+	// defer f.Close() // error handling omitted for example
+	// if err := pprof.StartCPUProfile(f); err != nil {
+	// 	log.Fatal("could not start CPU profile: ", err)
+	// }
 
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt)
-	go func() {
-		for range c {
-			// sig is a ^C, handle it
-			log.Println("closing")
-			pprof.StopCPUProfile()
-			os.Exit(0)
-		}
-	}()
+	// c := make(chan os.Signal, 1)
+	// signal.Notify(c, os.Interrupt)
+	// go func() {
+	// 	for range c {
+	// 		// sig is a ^C, handle it
+	// 		log.Println("closing")
+	// 		pprof.StopCPUProfile()
+	// 		os.Exit(0)
+	// 	}
+	// }()
 
 	server.Wait()
 }

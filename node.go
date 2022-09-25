@@ -9,14 +9,13 @@ import (
 	"time"
 
 	"github.com/cockroachdb/errors"
-	"github.com/google/uuid"
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
 )
 
 type Node struct {
 	fs.Inode
-	fileID   uuid.UUID
+	fileID   int64
 	fileType FileType
 	client   *SQLBackedClient
 }
@@ -49,16 +48,15 @@ func (n *Node) Access(ctx context.Context, mask uint32) syscall.Errno {
 	return 0
 }
 
-func (n *Node) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
-	file, err := n.client.GetFile(ctx, n.fileID)
-	if err != nil {
-		return errToSyscall(err)
-	}
-
-	out.SetTimeout(time.Hour)
+func (n *Node) getAttrResponse(file *FileMeta, out *fuse.Attr) error {
 	out.Nlink = 1
 	out.Mode = file.Mode()
 	out.Size = uint64(file.Length)
+
+	if file.FileType == FileTypeDirectory {
+		out.Size = 4096
+	}
+
 	out.Blocks = uint64(file.Length >> 9)
 	out.Atime = uint64(file.LastAccess.Unix())
 	out.Mtime = uint64(file.LastWrite.Unix())
@@ -84,11 +82,31 @@ func (n *Node) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut)
 	out.Blksize = 4096
 	out.Padding = 0
 
+	return nil
+}
+
+func (n *Node) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	file, err := n.client.GetFile(ctx, n.fileID)
+	if err != nil {
+		return errToSyscall(err)
+	}
+
+	out.SetTimeout(time.Second)
+	if err := n.getAttrResponse(file, &out.Attr); err != nil {
+		return errToSyscall(err)
+	}
+
+	if fh != nil {
+		fileHandle := fh.(*FileHandle)
+		log.Println("oh actually i got a file handle:", fileHandle.fileID)
+	}
+
 	return 0
 }
 
 func (n *Node) Setattr(ctx context.Context, f fs.FileHandle, in *fuse.SetAttrIn, out *fuse.AttrOut) syscall.Errno {
 	if size, ok := in.GetSize(); ok {
+		log.Println("setting filesize to", size)
 		err := n.client.SetFileLength(ctx, n.fileID, int64(size))
 		if err != nil {
 			return errToSyscall(err)
@@ -143,9 +161,20 @@ func (n *Node) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs
 		return nil, errToSyscall(err)
 	}
 
+	out.SetAttrTimeout(time.Second)
+	out.SetEntryTimeout(time.Second)
+
+	if err := n.getAttrResponse(fileMeta, &out.Attr); err != nil {
+		return nil, errToSyscall(err)
+	}
+
+	if fileMeta.Name == "" {
+		log.Printf("uh oh, empty filename for %d inside %d with name %q", id, n.fileID, name)
+	}
+
 	stable := fs.StableAttr{
 		Mode: fileMeta.Mode(),
-		Ino:  0,
+		Ino:  uint64(id),
 	}
 	child := n.NewInode(ctx, &Node{
 		fileID:   id,
@@ -172,7 +201,7 @@ func (n *Node) Mkdir(ctx context.Context, name string, mode uint32, out *fuse.En
 
 	stable := fs.StableAttr{
 		Mode: 0o755 | fuse.S_IFDIR,
-		Ino:  0,
+		Ino:  uint64(newFileID),
 	}
 	child := n.NewInode(ctx, &Node{
 		fileID:   newFileID,
@@ -211,7 +240,7 @@ func (n *Node) Create(ctx context.Context, name string, flags uint32, mode uint3
 
 	stable := fs.StableAttr{
 		Mode: 0o644 | fuse.S_IFREG,
-		Ino:  0,
+		Ino:  uint64(newFileID),
 	}
 
 	newNode := &Node{
@@ -231,7 +260,7 @@ func (n *Node) Open(ctx context.Context, flags uint32) (fh fs.FileHandle, fuseFl
 		return nil, 0, syscall.EISDIR
 	}
 
-	log.Printf("file ID %q just opened", n.fileID)
+	log.Printf("file ID %d just opened", n.fileID)
 
 	newNode := &Node{
 		fileID:   n.fileID,
@@ -260,35 +289,6 @@ func (n *Node) Unlink(ctx context.Context, name string) syscall.Errno {
 	return errToSyscall(err)
 }
 
-type DirStream struct {
-	Results []FileMeta
-	Cursor  int
-}
-
-func (s *DirStream) HasNext() bool {
-	return s.Cursor < len(s.Results)
-}
-
-func (s *DirStream) Next() (fuse.DirEntry, syscall.Errno) {
-	if !s.HasNext() {
-		return fuse.DirEntry{}, syscall.ENOENT
-	}
-
-	defer func() {
-		s.Cursor++
-	}()
-
-	return fuse.DirEntry{
-		Mode: s.Results[s.Cursor].Mode(),
-		Name: s.Results[s.Cursor].Name,
-		Ino:  0,
-	}, 0
-}
-
-func (s *DirStream) Close() {
-	s.Results = nil
-}
-
 func (n *Node) Opendir(ctx context.Context) syscall.Errno {
 	return 0
 }
@@ -303,10 +303,17 @@ func (n *Node) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 		return nil, errToSyscall(err)
 	}
 
-	return &DirStream{
-		Results: files,
-		Cursor:  0,
-	}, 0
+	var results []fuse.DirEntry
+
+	for _, file := range files {
+		results = append(results, fuse.DirEntry{
+			Mode: file.Mode(),
+			Name: file.Name,
+			Ino:  uint64(file.FileID),
+		})
+	}
+
+	return fs.NewListDirStream(results), 0
 }
 
 func (n *Node) Rmdir(ctx context.Context, name string) syscall.Errno {

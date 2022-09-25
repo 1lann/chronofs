@@ -7,29 +7,41 @@ package store
 
 import (
 	"context"
-	"database/sql"
 )
 
-const createFile = `-- name: CreateFile :exec
-INSERT INTO files (file_id, file_type, length) VALUES (?, ?, ?)
+const createFile = `-- name: CreateFile :one
+INSERT INTO files (parent, name, file_type, length, last_write_at, last_access_at) VALUES (?, ?, ?, ?, ?, ?)
+RETURNING file_id
 `
 
 type CreateFileParams struct {
-	FileID   []byte
-	FileType int64
-	Length   int64
+	Parent       int64
+	Name         string
+	FileType     int64
+	Length       int64
+	LastWriteAt  int64
+	LastAccessAt int64
 }
 
-func (q *Queries) CreateFile(ctx context.Context, arg CreateFileParams) error {
-	_, err := q.db.ExecContext(ctx, createFile, arg.FileID, arg.FileType, arg.Length)
-	return err
+func (q *Queries) CreateFile(ctx context.Context, arg CreateFileParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, createFile,
+		arg.Parent,
+		arg.Name,
+		arg.FileType,
+		arg.Length,
+		arg.LastWriteAt,
+		arg.LastAccessAt,
+	)
+	var file_id int64
+	err := row.Scan(&file_id)
+	return file_id, err
 }
 
 const deleteFile = `-- name: DeleteFile :execrows
 DELETE FROM files WHERE file_id = ?
 `
 
-func (q *Queries) DeleteFile(ctx context.Context, fileID []byte) (int64, error) {
+func (q *Queries) DeleteFile(ctx context.Context, fileID int64) (int64, error) {
 	result, err := q.db.ExecContext(ctx, deleteFile, fileID)
 	if err != nil {
 		return 0, err
@@ -42,7 +54,7 @@ DELETE FROM pages WHERE file_id = ? AND page_num = ? AND page_size_power = ?
 `
 
 type DeletePageParams struct {
-	FileID        []byte
+	FileID        int64
 	PageNum       int64
 	PageSizePower int64
 }
@@ -59,7 +71,7 @@ const deletePages = `-- name: DeletePages :execrows
 DELETE FROM pages WHERE file_id = ?
 `
 
-func (q *Queries) DeletePages(ctx context.Context, fileID []byte) (int64, error) {
+func (q *Queries) DeletePages(ctx context.Context, fileID int64) (int64, error) {
 	result, err := q.db.ExecContext(ctx, deletePages, fileID)
 	if err != nil {
 		return 0, err
@@ -71,7 +83,7 @@ const getDirectoryFiles = `-- name: GetDirectoryFiles :many
 SELECT file_id, parent, name, file_type, length, last_write_at, last_access_at FROM files WHERE parent = ?
 `
 
-func (q *Queries) GetDirectoryFiles(ctx context.Context, parent []byte) ([]File, error) {
+func (q *Queries) GetDirectoryFiles(ctx context.Context, parent int64) ([]File, error) {
 	rows, err := q.db.QueryContext(ctx, getDirectoryFiles, parent)
 	if err != nil {
 		return nil, err
@@ -112,7 +124,7 @@ SELECT file_id, parent, name, file_type, length, last_write_at, last_access_at F
 
 // CREATE TABLE IF NOT EXISTS files (
 //
-//	file_id         BLOB          PRIMARY KEY,
+//	file_id         INTEGER       PRIMARY KEY,
 //	parent          BLOB          NOT NULL,
 //	name            VARCHAR(4096) NOT NULL,
 //	file_type       TINYINT       NOT NULL,
@@ -125,7 +137,7 @@ SELECT file_id, parent, name, file_type, length, last_write_at, last_access_at F
 // CREATE INDEX IF NOT EXISTS files_parent ON files (parent);
 // CREATE TABLE IF NOT EXISTS pages (
 //
-//	file_id         BLOB          NOT NULL,
+//	file_id         INTEGER       NOT NULL,
 //	page_num        INTEGER       NOT NULL,
 //	page_size_power TINYINT       NOT NULL,
 //	data            BLOB          NOT NULL,
@@ -136,7 +148,7 @@ SELECT file_id, parent, name, file_type, length, last_write_at, last_access_at F
 //
 // )
 // CREATE INDEX IF NOT EXISTS pages_last_access_at ON pages (last_access_at);
-func (q *Queries) GetFile(ctx context.Context, fileID []byte) (File, error) {
+func (q *Queries) GetFile(ctx context.Context, fileID int64) (File, error) {
 	row := q.db.QueryRowContext(ctx, getFile, fileID)
 	var i File
 	err := row.Scan(
@@ -156,7 +168,7 @@ SELECT file_id, parent, name, file_type, length, last_write_at, last_access_at F
 `
 
 type GetFileInDirectoryParams struct {
-	Parent []byte
+	Parent int64
 	Name   string
 }
 
@@ -180,7 +192,7 @@ SELECT data FROM pages WHERE file_id = ? AND page_num = ? AND page_size_power = 
 `
 
 type GetPageParams struct {
-	FileID        []byte
+	FileID        int64
 	PageNum       int64
 	PageSizePower int64
 }
@@ -197,9 +209,9 @@ UPDATE files SET file_id = ?, parent = ? WHERE file_id = ?
 `
 
 type RenameFileParams struct {
-	FileID   []byte
-	Parent   []byte
-	FileID_2 []byte
+	FileID   int64
+	Parent   int64
+	FileID_2 int64
 }
 
 func (q *Queries) RenameFile(ctx context.Context, arg RenameFileParams) error {
@@ -212,8 +224,8 @@ UPDATE pages SET file_id = ? WHERE file_id = ?
 `
 
 type RenamePageParams struct {
-	FileID   []byte
-	FileID_2 []byte
+	FileID   int64
+	FileID_2 int64
 }
 
 func (q *Queries) RenamePage(ctx context.Context, arg RenamePageParams) error {
@@ -226,8 +238,8 @@ UPDATE pages SET last_read_at = ? WHERE file_id = ? AND page_num = ? AND page_si
 `
 
 type UpdatePageLastReadAtParams struct {
-	LastReadAt    sql.NullInt64
-	FileID        []byte
+	LastReadAt    int64
+	FileID        int64
 	PageNum       int64
 	PageSizePower int64
 }
@@ -250,8 +262,8 @@ UPDATE pages SET last_write_at = ? WHERE file_id = ? AND page_num = ? AND page_s
 `
 
 type UpdatePageLastWriteAtParams struct {
-	LastWriteAt   sql.NullInt64
-	FileID        []byte
+	LastWriteAt   int64
+	FileID        int64
 	PageNum       int64
 	PageSizePower int64
 }
@@ -275,7 +287,7 @@ ON CONFLICT (file_id) DO UPDATE SET length = excluded.length
 `
 
 type UpsertFileLengthParams struct {
-	FileID []byte
+	FileID int64
 	Length int64
 }
 
@@ -293,10 +305,10 @@ ON CONFLICT (file_id, page_num, page_size_power) DO UPDATE SET
 `
 
 type UpsertPageParams struct {
-	FileID        []byte
+	FileID        int64
 	PageNum       int64
 	PageSizePower int64
-	LastWriteAt   sql.NullInt64
+	LastWriteAt   int64
 	Data          []byte
 }
 

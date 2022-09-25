@@ -4,7 +4,6 @@ import (
 	"context"
 	"log"
 	"syscall"
-	"time"
 
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
@@ -38,6 +37,7 @@ func (f *FileHandle) Release(ctx context.Context) syscall.Errno {
 }
 
 func (f *FileHandle) Getattr(ctx context.Context, out *fuse.AttrOut) syscall.Errno {
+	log.Println("it's this lol")
 	return f.Node.Getattr(ctx, f, out)
 }
 
@@ -52,9 +52,7 @@ func (f *FileHandle) Read(ctx context.Context, dest []byte, off int64) (fuse.Rea
 }
 
 func (f *FileHandle) Write(ctx context.Context, data []byte, off int64) (written uint32, errno syscall.Errno) {
-	t := time.Now()
 	err := f.Node.client.WriteFile(ctx, f.Node.fileID, off, data)
-	log.Println("write took:", time.Since(t))
 	if err != nil {
 		return 0, errToSyscall(err)
 	}

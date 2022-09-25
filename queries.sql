@@ -1,5 +1,5 @@
 -- CREATE TABLE IF NOT EXISTS files (
---     file_id         BLOB          PRIMARY KEY,
+--     file_id         INTEGER       PRIMARY KEY,
 --     parent          BLOB          NOT NULL,
 --     name            VARCHAR(4096) NOT NULL,
 --     file_type       TINYINT       NOT NULL,
@@ -12,7 +12,7 @@
 -- CREATE INDEX IF NOT EXISTS files_parent ON files (parent);
 
 -- CREATE TABLE IF NOT EXISTS pages (
---     file_id         BLOB          NOT NULL,
+--     file_id         INTEGER       NOT NULL,
 --     page_num        INTEGER       NOT NULL,
 --     page_size_power TINYINT       NOT NULL,
 --     data            BLOB          NOT NULL,
@@ -31,8 +31,9 @@ SELECT * FROM files WHERE file_id = ?;
 INSERT INTO files (file_id, length) VALUES (?, ?)
 ON CONFLICT (file_id) DO UPDATE SET length = excluded.length;
 
--- name: CreateFile :exec
-INSERT INTO files (file_id, file_type, length) VALUES (?, ?, ?);
+-- name: CreateFile :one
+INSERT INTO files (parent, name, file_type, length, last_write_at, last_access_at) VALUES (?, ?, ?, ?, ?, ?)
+RETURNING file_id;
 
 -- name: UpsertPage :exec
 INSERT INTO pages (file_id, page_num, page_size_power, last_write_at, data)

@@ -6,18 +6,18 @@ import (
 	"log"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/1lann/mc-aware-remote-state/store"
 	"github.com/cockroachdb/errors"
-	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"golang.org/x/sync/singleflight"
 )
 
 type fileLock struct {
-	fileID  uuid.UUID
+	fileID  int64
 	mu      sync.RWMutex
 	clients int64
 	c       *SQLBackedClient
@@ -55,7 +55,7 @@ type SQLBackedClient struct {
 	PagePool     *PagePool
 	User         *user.User
 	Q            *store.Queries
-	fileLock     map[uuid.UUID]*fileLock
+	fileLock     map[int64]*fileLock
 	mu           sync.Mutex
 
 	fileGroup *singleflight.Group
@@ -69,7 +69,7 @@ func NewSQLBackedClient(maxFiles uint64, maxPoolSize uint64, user *user.User, db
 		PagePool:     NewPagePool(maxPoolSize, pagePower),
 		User:         user,
 		Q:            store.New(db),
-		fileLock:     make(map[uuid.UUID]*fileLock),
+		fileLock:     make(map[int64]*fileLock),
 		fileGroup:    &singleflight.Group{},
 		pageGroup:    &singleflight.Group{},
 		pagePower:    pagePower,
@@ -78,7 +78,7 @@ func NewSQLBackedClient(maxFiles uint64, maxPoolSize uint64, user *user.User, db
 
 var defaultTimeout = 3 * time.Second
 
-func (c *SQLBackedClient) getFileLock(fileID uuid.UUID) *fileLock {
+func (c *SQLBackedClient) getFileLock(fileID int64) *fileLock {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -97,36 +97,26 @@ func (c *SQLBackedClient) getFileLock(fileID uuid.UUID) *fileLock {
 }
 
 func FileMetaFromFile(file *store.File) (FileMeta, error) {
-	fileID, err := uuid.FromBytes(file.FileID)
-	if err != nil {
-		return FileMeta{}, errors.Wrap(err, "uuid.ParseBytes")
-	}
-
-	parentID, err := uuid.ParseBytes(file.Parent)
-	if err != nil {
-		return FileMeta{}, errors.Wrap(err, "uuid.ParseBytes")
-	}
-
 	return FileMeta{
-		FileID:     fileID,
-		Parent:     parentID,
+		FileID:     file.FileID,
+		Parent:     file.Parent,
 		Name:       file.Name,
 		Length:     file.Length,
 		FileType:   FileType(file.FileType),
-		LastWrite:  time.UnixMilli(file.LastWriteAt.Int64),
-		LastAccess: time.UnixMilli(file.LastAccessAt.Int64),
+		LastWrite:  time.UnixMilli(file.LastWriteAt),
+		LastAccess: time.UnixMilli(file.LastAccessAt),
 	}, nil
 }
 
-func (c *SQLBackedClient) GetFile(ctx context.Context, fileID uuid.UUID) (*FileMeta, error) {
-	result := c.fileGroup.DoChan(fileID.String(), func() (any, error) {
+func (c *SQLBackedClient) GetFile(ctx context.Context, fileID int64) (*FileMeta, error) {
+	result := c.fileGroup.DoChan(strconv.FormatInt(fileID, 10), func() (any, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
 		defer cancel()
 
 		file, err := c.FileMetaPool.GetFile(fileID)
 		if errors.Is(err, ErrNotFound) {
 			// fetch from database
-			fileRow, err := c.Q.GetFile(ctx, fileID[:])
+			fileRow, err := c.Q.GetFile(ctx, fileID)
 			if errors.Is(err, sql.ErrNoRows) {
 				return nil, ErrNotFound
 			} else if err != nil {
@@ -165,23 +155,23 @@ func (c *SQLBackedClient) GetFile(ctx context.Context, fileID uuid.UUID) (*FileM
 	}
 }
 
-func (c *SQLBackedClient) LookupFileInDir(ctx context.Context, dirID uuid.UUID, name string) (uuid.UUID, error) {
+func (c *SQLBackedClient) LookupFileInDir(ctx context.Context, dirID int64, name string) (int64, error) {
 	next, err := c.FileMetaPool.LookupFileInDirectory(name, dirID)
 	if errors.Is(err, ErrNotFound) {
 		// fetch from database
 		fileRow, err := c.Q.GetFileInDirectory(ctx, store.GetFileInDirectoryParams{
-			Parent: dirID[:],
+			Parent: dirID,
 			Name:   name,
 		})
 		if errors.Is(err, sql.ErrNoRows) {
-			return uuid.UUID{}, ErrNotFound
+			return 0, ErrNotFound
 		} else if err != nil {
-			return uuid.UUID{}, errors.Wrap(err, "store.GetFileInDirectory")
+			return 0, errors.Wrap(err, "store.GetFileInDirectory")
 		}
 
 		fileMeta, err := FileMetaFromFile(&fileRow)
 		if err != nil {
-			return uuid.UUID{}, err
+			return 0, err
 		}
 
 		err = c.FileMetaPool.AddFile(fileMeta, false)
@@ -189,24 +179,26 @@ func (c *SQLBackedClient) LookupFileInDir(ctx context.Context, dirID uuid.UUID, 
 			log.Println("error adding file to pool:", next)
 			// skip handling error for now, the pool is merely a cache
 		}
+
+		next = fileMeta.FileID
 	} else if errors.Is(err, ErrTombstoned) {
-		return uuid.UUID{}, ErrNotFound
+		return 0, ErrNotFound
 	} else if err != nil {
-		return uuid.UUID{}, err
+		return 0, err
 	}
 
 	return next, nil
 }
 
-func (c *SQLBackedClient) LookupFileByName(ctx context.Context, name string) (uuid.UUID, error) {
+func (c *SQLBackedClient) LookupFileByName(ctx context.Context, name string) (int64, error) {
 	trail := filepath.SplitList(name)
 
-	cur := uuid.UUID{}
+	var cur int64
 
 	for _, part := range trail {
 		next, err := c.LookupFileInDir(ctx, cur, part)
 		if err != nil {
-			return uuid.UUID{}, err
+			return 0, err
 		}
 
 		cur = next
@@ -215,7 +207,7 @@ func (c *SQLBackedClient) LookupFileByName(ctx context.Context, name string) (uu
 	return cur, nil
 }
 
-func (c *SQLBackedClient) SetFileLength(ctx context.Context, fileID uuid.UUID, length int64) error {
+func (c *SQLBackedClient) SetFileLength(ctx context.Context, fileID int64, length int64) error {
 	if length < 0 {
 		return errors.New("length must be positive")
 	}
@@ -256,7 +248,7 @@ func (c *SQLBackedClient) SetFileLength(ctx context.Context, fileID uuid.UUID, l
 	return nil
 }
 
-func (c *SQLBackedClient) CreateFile(ctx context.Context, dirID uuid.UUID, name string, fileType FileType) (uuid.UUID, error) {
+func (c *SQLBackedClient) CreateFile(ctx context.Context, dirID int64, name string, fileType FileType) (int64, error) {
 	parentLock := c.getFileLock(dirID)
 	parentLock.RLock()
 	defer func() {
@@ -267,39 +259,53 @@ func (c *SQLBackedClient) CreateFile(ctx context.Context, dirID uuid.UUID, name 
 	// check the parent folder exists
 	parentMeta, err := c.GetFile(ctx, dirID)
 	if err != nil {
-		return uuid.UUID{}, err
+		return 0, err
 	}
 
 	if parentMeta.FileType != FileTypeDirectory {
-		return uuid.UUID{}, ErrNotSupported
+		return 0, ErrNotSupported
 	}
 
 	// check file doesn't already exist
 	_, err = c.LookupFileInDir(ctx, dirID, name)
 	if err == nil {
-		return uuid.UUID{}, ErrAlreadyExists
+		return 0, ErrAlreadyExists
 	} else if !errors.Is(err, ErrNotFound) {
-		return uuid.UUID{}, err
+		return 0, err
 	}
 
-	newFileID := uuid.New()
+	now := time.Now().Round(time.Millisecond)
+
+	// create file
+	fileID, err := c.Q.CreateFile(ctx, store.CreateFileParams{
+		Parent:       dirID,
+		Name:         name,
+		FileType:     int64(fileType),
+		Length:       0,
+		LastWriteAt:  now.UnixMilli(),
+		LastAccessAt: now.UnixMilli(),
+	})
+	if err != nil {
+		return 0, errors.Wrap(err, "store.CreateFile")
+	}
+
 	err = c.FileMetaPool.AddFile(FileMeta{
-		FileID:     newFileID,
+		FileID:     fileID,
 		Parent:     dirID,
-		Name:       filepath.Base(name),
+		Name:       name,
 		Length:     0,
 		FileType:   fileType,
-		LastWrite:  time.Now().Round(time.Millisecond),
-		LastAccess: time.Now().Round(time.Millisecond),
+		LastWrite:  now,
+		LastAccess: now,
 	}, true)
 	if err != nil {
-		return uuid.UUID{}, errors.Wrap(err, "FileMetaPool.AddFile")
+		return 0, errors.Wrap(err, "FileMetaPool.AddFile")
 	}
 
-	return newFileID, nil
+	return fileID, nil
 }
 
-func (c *SQLBackedClient) DeleteFile(ctx context.Context, fileID uuid.UUID) error {
+func (c *SQLBackedClient) DeleteFile(ctx context.Context, fileID int64) error {
 	lock := c.getFileLock(fileID)
 	lock.Lock()
 	defer func() {
@@ -322,7 +328,7 @@ func (c *SQLBackedClient) DeleteFile(ctx context.Context, fileID uuid.UUID) erro
 	return nil
 }
 
-func (c *SQLBackedClient) DeleteDir(ctx context.Context, fileID uuid.UUID) error {
+func (c *SQLBackedClient) DeleteDir(ctx context.Context, fileID int64) error {
 	lock := c.getFileLock(fileID)
 	lock.Lock()
 	defer func() {
@@ -344,7 +350,7 @@ func (c *SQLBackedClient) DeleteDir(ctx context.Context, fileID uuid.UUID) error
 	return nil
 }
 
-func (c *SQLBackedClient) RenameFile(ctx context.Context, fileID uuid.UUID, newParent uuid.UUID, newName string) error {
+func (c *SQLBackedClient) RenameFile(ctx context.Context, fileID int64, newParent int64, newName string) error {
 	log.Println("rename", fileID, newParent, newName)
 
 	dirLock := c.getFileLock(newParent)
@@ -378,7 +384,7 @@ func (c *SQLBackedClient) RenameFile(ctx context.Context, fileID uuid.UUID, newP
 	return nil
 }
 
-func (c *SQLBackedClient) ReadDir(ctx context.Context, dirID uuid.UUID) ([]FileMeta, error) {
+func (c *SQLBackedClient) ReadDir(ctx context.Context, dirID int64) ([]FileMeta, error) {
 	lock := c.getFileLock(dirID)
 	lock.RLock()
 	defer func() {
@@ -395,7 +401,7 @@ func (c *SQLBackedClient) ReadDir(ctx context.Context, dirID uuid.UUID) ([]FileM
 		return nil, ErrNotSupported
 	}
 
-	files, err := c.Q.GetDirectoryFiles(ctx, dirID[:])
+	files, err := c.Q.GetDirectoryFiles(ctx, dirID)
 	if err != nil {
 		return nil, errors.Wrap(err, "GetDirectoryFiles")
 	}

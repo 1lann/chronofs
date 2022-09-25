@@ -9,11 +9,10 @@ import (
 
 	"github.com/1lann/mc-aware-remote-state/store"
 	"github.com/cockroachdb/errors"
-	"github.com/google/uuid"
 )
 
-func (c *SQLBackedClient) readPage(ctx context.Context, fileID uuid.UUID, pageNum uint32) ([]byte, error) {
-	singleflightKey := fileID.String() + ":" + strconv.FormatInt(int64(pageNum), 10)
+func (c *SQLBackedClient) readPage(ctx context.Context, fileID int64, pageNum uint32) ([]byte, error) {
+	singleflightKey := strconv.FormatInt(fileID, 10) + ":" + strconv.FormatInt(int64(pageNum), 10)
 
 	// log.Printf("reading %q page %d", fileID, pageNum)
 
@@ -29,7 +28,7 @@ func (c *SQLBackedClient) readPage(ctx context.Context, fileID uuid.UUID, pageNu
 		if errors.Is(err, ErrNotFound) {
 			// fetch from database
 			data, err := c.Q.GetPage(ctx, store.GetPageParams{
-				FileID:        fileID[:],
+				FileID:        fileID,
 				PageNum:       int64(pageNum),
 				PageSizePower: int64(c.pagePower),
 			})
@@ -75,7 +74,7 @@ func (c *SQLBackedClient) readPage(ctx context.Context, fileID uuid.UUID, pageNu
 	}
 }
 
-func (c *SQLBackedClient) ReadFile(ctx context.Context, fileID uuid.UUID, offset int64, data []byte) (int, error) {
+func (c *SQLBackedClient) ReadFile(ctx context.Context, fileID int64, offset int64, data []byte) (int, error) {
 	if offset < 0 {
 		return 0, errors.New("offset must be positive")
 	}
@@ -100,14 +99,14 @@ func (c *SQLBackedClient) ReadFile(ctx context.Context, fileID uuid.UUID, offset
 	if offset >= maxLength {
 		return 0, nil
 	}
-	if maxLength >= offset+int64(len(data)) {
+	if maxLength > offset+int64(len(data)) {
 		maxLength = offset + int64(len(data))
 	}
 
 	var bytesWritten int64
 
 	lowerPage := offset >> int64(c.pagePower)
-	upperPage := maxLength >> int64(c.pagePower)
+	upperPage := (maxLength - 1) >> int64(c.pagePower)
 	for page := lowerPage; page <= upperPage; page++ {
 		pageOffset := offset - (page << c.pagePower)
 		if pageOffset < 0 {
@@ -120,14 +119,14 @@ func (c *SQLBackedClient) ReadFile(ctx context.Context, fileID uuid.UUID, offset
 			expectedPageLength = maxLength - pagePos - pageOffset
 		}
 
-		// log.Printf("reading page %d with offset %d local offset %d buffer size %d determined max length %d expected pagelen %d", page, offset, pageOffset, len(data), maxLength, expectedPageLength)
+		log.Printf("reading page %d with offset %d local offset %d buffer size %d determined max length %d expected pagelen %d", page, offset, pageOffset, len(data), maxLength, expectedPageLength)
 
 		pageData, err := c.readPage(ctx, fileID, uint32(page))
 		if err != nil {
 			return int(bytesWritten), errors.Wrapf(err, "readPage in ReadFile for file %q page %d", fileID, page)
 		}
 
-		n := int64(copy(data[bytesWritten:], pageData[:expectedPageLength]))
+		n := int64(copy(data[bytesWritten:], pageData[pageOffset:pageOffset+expectedPageLength]))
 		if n < expectedPageLength {
 			copy(data[bytesWritten+n:], make([]byte, expectedPageLength-int64(n)))
 		}
@@ -137,7 +136,7 @@ func (c *SQLBackedClient) ReadFile(ctx context.Context, fileID uuid.UUID, offset
 	return int(bytesWritten), nil
 }
 
-func (c *SQLBackedClient) writePage(ctx context.Context, fileID uuid.UUID, page uint32, offset uint64, data []byte) error {
+func (c *SQLBackedClient) writePage(ctx context.Context, fileID int64, page uint32, offset uint64, data []byte) error {
 	for {
 		err := c.PagePool.WritePage(PageKey{
 			FileID:  fileID,
@@ -176,7 +175,7 @@ func (c *SQLBackedClient) writeFileNoLock(ctx context.Context, fileMeta *FileMet
 	var bytesWritten int64
 
 	lowerPage := offset >> int64(c.pagePower)
-	upperPage := maxLength >> int64(c.pagePower)
+	upperPage := (maxLength - 1) >> int64(c.pagePower)
 	for page := lowerPage; page <= upperPage; page++ {
 		pageOffset := offset - (page << c.pagePower)
 		if pageOffset < 0 {
@@ -188,6 +187,8 @@ func (c *SQLBackedClient) writeFileNoLock(ctx context.Context, fileMeta *FileMet
 		if pagePos+pageOffset+expectedPageLength > maxLength {
 			expectedPageLength = maxLength - pagePos - pageOffset
 		}
+
+		log.Printf("writing page %d with offset %d local offset %d buffer size %d determined max length %d expected pagelen %d", page, offset, pageOffset, len(data), maxLength, expectedPageLength)
 
 		err := c.writePage(ctx, fileMeta.FileID, uint32(page), uint64(pageOffset),
 			data[bytesWritten:bytesWritten+expectedPageLength])
@@ -202,13 +203,13 @@ func (c *SQLBackedClient) writeFileNoLock(ctx context.Context, fileMeta *FileMet
 
 	// determine if file needs to be extended
 	if maxLength > fileMeta.Length {
-		c.FileMetaPool.UpdateLength(fileMeta.FileID, offset+int64(len(data)))
+		c.FileMetaPool.UpdateLength(fileMeta.FileID, maxLength)
 	}
 
 	return nil
 }
 
-func (c *SQLBackedClient) WriteFile(ctx context.Context, fileID uuid.UUID, offset int64, data []byte) error {
+func (c *SQLBackedClient) WriteFile(ctx context.Context, fileID int64, offset int64, data []byte) error {
 	if offset < 0 {
 		return errors.New("offset must be positive")
 	}

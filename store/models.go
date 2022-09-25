@@ -9,21 +9,21 @@ import (
 )
 
 type File struct {
-	FileID       []byte
-	Parent       []byte
+	FileID       int64
+	Parent       int64
 	Name         string
 	FileType     int64
 	Length       int64
-	LastWriteAt  sql.NullInt64
-	LastAccessAt sql.NullInt64
+	LastWriteAt  int64
+	LastAccessAt int64
 }
 
 type Page struct {
-	FileID        []byte
+	FileID        int64
 	PageNum       int64
 	PageSizePower int64
 	Data          []byte
-	LastWriteAt   sql.NullInt64
-	LastReadAt    sql.NullInt64
-	LastAcceessAt sql.NullInt64
+	LastWriteAt   int64
+	LastReadAt    int64
+	LastAccessAt  sql.NullInt64
 }
