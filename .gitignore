@@ -2,3 +2,6 @@
 .vscode/
 mountpoint/
 *.db
+*.db-shm
+*.db-wal
+.test.db-litestream/

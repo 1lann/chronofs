@@ -24,17 +24,19 @@ type Page struct {
 	Data      []byte
 	tombstone bool
 	dirty     bool
+	pending   bool
 	element   *list.Element
 }
 
 type PagePool struct {
-	mu         sync.Mutex
-	pages      map[PageKey]*Page
-	dirtyPages []*Page
-	dll        *list.List
-	pagePower  uint8
-	size       uint64
-	maxSize    uint64
+	mu           sync.Mutex
+	pages        map[PageKey]*Page
+	dirtyPages   []*Page
+	pendingPages []*Page
+	dll          *list.List
+	pagePower    uint8
+	size         uint64
+	maxSize      uint64
 }
 
 func NewPagePool(maxSize uint64, pagePower uint8) *PagePool {
@@ -51,13 +53,15 @@ func (p *PagePool) TombstoneFile(fileID int64, fileLength uint64) {
 	defer p.mu.Unlock()
 
 	maxPages := uint32(fileLength >> p.pagePower)
-	for i := uint32(0); i < maxPages; i++ {
+	for i := uint32(0); i <= maxPages; i++ {
 		page, ok := p.pages[PageKey{
 			FileID:  fileID,
 			PageNum: i,
 		}]
 		if ok {
-			p.forgetPage(page)
+			page.tombstone = true
+			p.markDirty(page)
+			p.markActivity(page)
 		}
 	}
 }
@@ -177,11 +181,24 @@ func (p *PagePool) SwapDirtyPages() []Page {
 		pages[i] = *page
 		copy(pages[i].Data, page.Data)
 		page.dirty = false
+		page.pending = true
 	}
 
+	p.pendingPages = append(p.pendingPages, p.dirtyPages...)
 	p.dirtyPages = nil
 
 	return pages
+}
+
+func (p *PagePool) CompletePending() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for _, page := range p.pendingPages {
+		page.pending = false
+	}
+
+	p.pendingPages = nil
 }
 
 func (p *PagePool) markDirty(page *Page) {
@@ -204,7 +221,7 @@ func (p *PagePool) makeSpace(bytes uint64) bool {
 	for p.size+bytes > p.maxSize {
 		front := p.dll.Front()
 		page := front.Value.(*Page)
-		if page.dirty {
+		if page.dirty || page.pending {
 			return false
 		}
 		p.forgetPage(page)

@@ -2,8 +2,6 @@ package main
 
 import (
 	"container/list"
-	"log"
-	"runtime/debug"
 	"sort"
 	"sync"
 	"time"
@@ -27,6 +25,7 @@ type FileMeta struct {
 	LastWrite  time.Time
 	LastAccess time.Time
 	dirty      bool
+	pending    bool
 	tombstone  bool
 	element    *list.Element
 }
@@ -44,6 +43,7 @@ type FileMetaPool struct {
 	files         map[int64]*FileMeta
 	filesByParent map[int64]map[string]int64
 	dirtyFiles    []*FileMeta
+	pendingFiles  []*FileMeta
 	dll           *list.List
 	numFiles      uint64
 	maxFiles      uint64
@@ -77,7 +77,11 @@ func (p *FileMetaPool) TombstoneFile(fileID int64) error {
 func (p *FileMetaPool) forgetFile(file *FileMeta) {
 	p.dll.Remove(file.element)
 	delete(p.files, file.FileID)
-	delete(p.filesByParent, file.FileID)
+
+	if len(p.filesByParent[file.FileID]) == 0 {
+		delete(p.filesByParent, file.FileID)
+	}
+
 	delete(p.filesByParent[file.Parent], file.Name)
 	if len(p.filesByParent[file.Parent]) == 0 {
 		delete(p.filesByParent, file.Parent)
@@ -230,8 +234,6 @@ func (p *FileMetaPool) GetFile(fileID int64) (FileMeta, error) {
 }
 
 func (p *FileMetaPool) UpdateLength(fileID int64, fileLength int64) error {
-	log.Printf("updating file length on %q to %d due to %s", fileID, fileLength, string(debug.Stack()))
-
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -258,12 +260,25 @@ func (p *FileMetaPool) SwapDirtyFiles() []FileMeta {
 
 	for i, page := range p.dirtyFiles {
 		page.dirty = false
+		page.pending = true
 		files[i] = *page
 	}
 
+	p.pendingFiles = append(p.pendingFiles, p.dirtyFiles...)
 	p.dirtyFiles = nil
 
 	return files
+}
+
+func (p *FileMetaPool) CompletePending() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for _, page := range p.pendingFiles {
+		page.pending = false
+	}
+
+	p.pendingFiles = nil
 }
 
 func (p *FileMetaPool) markDirty(file *FileMeta) {
@@ -291,7 +306,7 @@ func (p *FileMetaPool) makeSpace() bool {
 	for p.numFiles+1 > p.maxFiles {
 		front := p.dll.Front()
 		file := front.Value.(*FileMeta)
-		if file.dirty {
+		if file.dirty || file.pending {
 			return false
 		}
 		p.forgetFile(file)

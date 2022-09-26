@@ -20,10 +20,5 @@ CREATE TABLE IF NOT EXISTS pages (
     page_num        INTEGER       NOT NULL,
     page_size_power TINYINT       NOT NULL,
     data            BLOB          NOT NULL,
-    last_write_at   INTEGER       NOT NULL, -- unix timestamp in millis
-    last_read_at    INTEGER       NOT NULL, -- unix timestamp in millis
-    last_access_at INTEGER GENERATED ALWAYS AS (MAX(last_write_at, last_read_at)) VIRTUAL,
     PRIMARY KEY (file_id, page_num, page_size_power)
 );
-
-CREATE INDEX IF NOT EXISTS pages_last_access_at ON pages (last_access_at);

@@ -4,9 +4,7 @@
 
 package store
 
-import (
-	"database/sql"
-)
+import ()
 
 type File struct {
 	FileID       int64
@@ -23,7 +21,4 @@ type Page struct {
 	PageNum       int64
 	PageSizePower int64
 	Data          []byte
-	LastWriteAt   int64
-	LastReadAt    int64
-	LastAccessAt  sql.NullInt64
 }

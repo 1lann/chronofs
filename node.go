@@ -96,17 +96,11 @@ func (n *Node) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut)
 		return errToSyscall(err)
 	}
 
-	if fh != nil {
-		fileHandle := fh.(*FileHandle)
-		log.Println("oh actually i got a file handle:", fileHandle.fileID)
-	}
-
 	return 0
 }
 
 func (n *Node) Setattr(ctx context.Context, f fs.FileHandle, in *fuse.SetAttrIn, out *fuse.AttrOut) syscall.Errno {
 	if size, ok := in.GetSize(); ok {
-		log.Println("setting filesize to", size)
 		err := n.client.SetFileLength(ctx, n.fileID, int64(size))
 		if err != nil {
 			return errToSyscall(err)
@@ -259,8 +253,6 @@ func (n *Node) Open(ctx context.Context, flags uint32) (fh fs.FileHandle, fuseFl
 	if n.fileType != FileTypeRegular {
 		return nil, 0, syscall.EISDIR
 	}
-
-	log.Printf("file ID %d just opened", n.fileID)
 
 	newNode := &Node{
 		fileID:   n.fileID,

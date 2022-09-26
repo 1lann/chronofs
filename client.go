@@ -54,6 +54,7 @@ type SQLBackedClient struct {
 	FileMetaPool *FileMetaPool
 	PagePool     *PagePool
 	User         *user.User
+	DB           *sqlx.DB
 	Q            *store.Queries
 	fileLock     map[int64]*fileLock
 	mu           sync.Mutex
@@ -68,6 +69,7 @@ func NewSQLBackedClient(maxFiles uint64, maxPoolSize uint64, user *user.User, db
 		FileMetaPool: NewFileMetaPool(maxFiles),
 		PagePool:     NewPagePool(maxPoolSize, pagePower),
 		User:         user,
+		DB:           db,
 		Q:            store.New(db),
 		fileLock:     make(map[int64]*fileLock),
 		fileGroup:    &singleflight.Group{},
@@ -367,16 +369,22 @@ func (c *SQLBackedClient) RenameFile(ctx context.Context, fileID int64, newParen
 		lock.Release()
 	}()
 
-	log.Println("rename locks acquired")
-
 	fileMeta, err := c.GetFile(ctx, newParent)
 	if err != nil {
 		return err
 	}
 
+	log.Printf("renaming from %q to %q for %d", fileMeta.Name, newName, fileMeta.FileID)
+
 	if fileMeta.FileType != FileTypeDirectory {
 		return ErrNotFound
 	}
+
+	c.Q.RenameFile(ctx, store.RenameFileParams{
+		FileID: fileID,
+		Name:   newName,
+		Parent: newParent,
+	})
 
 	c.FileMetaPool.ChangeName(fileID, newName)
 	c.FileMetaPool.ChangeParent(fileID, newParent)
@@ -417,4 +425,86 @@ func (c *SQLBackedClient) ReadDir(ctx context.Context, dirID int64) ([]FileMeta,
 	}
 
 	return c.FileMetaPool.Union(dirID, remoteFiles), nil
+}
+
+// syncs the state of the filesystem to disk.
+func (c *SQLBackedClient) Sync(ctx context.Context) error {
+	files := c.FileMetaPool.SwapDirtyFiles()
+	pages := c.PagePool.SwapDirtyPages()
+
+	log.Printf("sync has %d files and %d pages", len(files), len(pages))
+
+	if len(files) == 0 && len(pages) == 0 {
+		return nil
+	}
+
+	tx, err := c.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return errors.Wrap(err, "BeginTx")
+	}
+
+	err = func() error {
+		q := c.Q.WithTx(tx)
+
+		for _, file := range files {
+			if file.tombstone {
+				_, err := q.DeleteFile(ctx, file.FileID)
+				if err != nil {
+					return errors.Wrap(err, "DeleteFile")
+				}
+			} else {
+				err := q.UpdateFile(ctx, store.UpdateFileParams{
+					FileID:       file.FileID,
+					Parent:       file.Parent,
+					Name:         file.Name,
+					FileType:     int64(file.FileType),
+					Length:       file.Length,
+					LastWriteAt:  file.LastWrite.UnixMilli(),
+					LastAccessAt: file.LastAccess.UnixMilli(),
+				})
+				if err != nil {
+					return errors.Wrap(err, "UpdateFile")
+				}
+			}
+		}
+
+		for _, page := range pages {
+			if page.tombstone {
+				_, err := q.DeletePage(ctx, store.DeletePageParams{
+					FileID:        page.Key.FileID,
+					PageNum:       int64(page.Key.PageNum),
+					PageSizePower: int64(c.pagePower),
+				})
+				if err != nil {
+					return errors.Wrap(err, "DeletePage")
+				}
+			} else {
+				err := q.UpsertPage(ctx, store.UpsertPageParams{
+					FileID:        page.Key.FileID,
+					PageNum:       int64(page.Key.PageNum),
+					PageSizePower: int64(c.pagePower),
+					Data:          page.Data,
+				})
+				if err != nil {
+					return errors.Wrap(err, "UpsertPage")
+				}
+			}
+		}
+
+		return nil
+	}()
+	if err != nil {
+		tx.Rollback()
+		return errors.Wrap(err, "tx execution")
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		return errors.Wrap(err, "Commit")
+	}
+
+	c.FileMetaPool.CompletePending()
+	c.PagePool.CompletePending()
+
+	return nil
 }

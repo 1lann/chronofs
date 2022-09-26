@@ -32,7 +32,6 @@ func (c *SQLBackedClient) readPage(ctx context.Context, fileID int64, pageNum ui
 				PageNum:       int64(pageNum),
 				PageSizePower: int64(c.pagePower),
 			})
-			log.Println("no page found in pool!!")
 			if errors.Is(err, sql.ErrNoRows) {
 				// create the page if it doesn't exist
 				if err := c.PagePool.AddPage(pageKey, nil, true); err != nil {
@@ -119,14 +118,18 @@ func (c *SQLBackedClient) ReadFile(ctx context.Context, fileID int64, offset int
 			expectedPageLength = maxLength - pagePos - pageOffset
 		}
 
-		log.Printf("reading page %d with offset %d local offset %d buffer size %d determined max length %d expected pagelen %d", page, offset, pageOffset, len(data), maxLength, expectedPageLength)
+		// log.Printf("reading page %d with offset %d local offset %d buffer size %d determined max length %d expected pagelen %d", page, offset, pageOffset, len(data), maxLength, expectedPageLength)
 
 		pageData, err := c.readPage(ctx, fileID, uint32(page))
 		if err != nil {
 			return int(bytesWritten), errors.Wrapf(err, "readPage in ReadFile for file %q page %d", fileID, page)
 		}
 
-		n := int64(copy(data[bytesWritten:], pageData[pageOffset:pageOffset+expectedPageLength]))
+		upperPageBound := len(pageData)
+		if pageOffset+expectedPageLength < int64(upperPageBound) {
+			upperPageBound = int(pageOffset + expectedPageLength)
+		}
+		n := int64(copy(data[bytesWritten:], pageData[pageOffset:upperPageBound]))
 		if n < expectedPageLength {
 			copy(data[bytesWritten+n:], make([]byte, expectedPageLength-int64(n)))
 		}
@@ -188,7 +191,7 @@ func (c *SQLBackedClient) writeFileNoLock(ctx context.Context, fileMeta *FileMet
 			expectedPageLength = maxLength - pagePos - pageOffset
 		}
 
-		log.Printf("writing page %d with offset %d local offset %d buffer size %d determined max length %d expected pagelen %d", page, offset, pageOffset, len(data), maxLength, expectedPageLength)
+		// log.Printf("writing page %d with offset %d local offset %d buffer size %d determined max length %d expected pagelen %d", page, offset, pageOffset, len(data), maxLength, expectedPageLength)
 
 		err := c.writePage(ctx, fileMeta.FileID, uint32(page), uint64(pageOffset),
 			data[bytesWritten:bytesWritten+expectedPageLength])
