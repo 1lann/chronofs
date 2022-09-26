@@ -1,9 +1,9 @@
-package main
+package chronofs
 
 import (
 	"context"
 	"log"
-	"path/filepath"
+	"os/user"
 	"strconv"
 	"syscall"
 	"time"
@@ -13,11 +13,31 @@ import (
 	"github.com/hanwen/go-fuse/v2/fuse"
 )
 
+type NodeContext struct {
+	FSClient
+	user *user.User
+}
+
 type Node struct {
 	fs.Inode
 	fileID   int64
 	fileType FileType
-	client   *SQLBackedClient
+	context  *NodeContext
+}
+
+func NewRootNode(client FSClient, user *user.User) *Node {
+	return NewNodeWithRoot(client, user, RootID)
+}
+
+func NewNodeWithRoot(client FSClient, user *user.User, rootID int64) *Node {
+	return &Node{
+		fileID:   rootID,
+		fileType: FileTypeDirectory,
+		context: &NodeContext{
+			FSClient: client,
+			user:     user,
+		},
+	}
 }
 
 type RWNode interface {
@@ -48,13 +68,29 @@ func (n *Node) Access(ctx context.Context, mask uint32) syscall.Errno {
 	return 0
 }
 
-func (n *Node) getAttrResponse(file *FileMeta, out *fuse.Attr) error {
+func getUserGroupID(u *user.User) (uid int64, gid int64, err error) {
+	uid, err = strconv.ParseInt(u.Uid, 10, 64)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	gid, err = strconv.ParseInt(u.Gid, 10, 64)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	return uid, gid, nil
+}
+
+func (n *Node) getAttrResponse(file *FileMeta, out *fuse.Attr) syscall.Errno {
 	out.Nlink = 1
 	out.Mode = file.Mode()
 	out.Size = uint64(file.Length)
 
 	if file.FileType == FileTypeDirectory {
 		out.Size = 4096
+	} else if file.FileType == FileTypeSymlink {
+		out.Size = uint64(len(file.Link))
 	}
 
 	out.Blocks = uint64(file.Length >> 9)
@@ -62,15 +98,10 @@ func (n *Node) getAttrResponse(file *FileMeta, out *fuse.Attr) error {
 	out.Mtime = uint64(file.LastWrite.Unix())
 	out.Atimensec = uint32(file.LastAccess.Nanosecond())
 	out.Mtimensec = uint32(file.LastWrite.Nanosecond())
-	uid, err := strconv.Atoi(n.client.User.Uid)
-	if err != nil {
-		log.Println("failed to parse uid", err)
-		return syscall.EIO
-	}
 
-	gid, err := strconv.Atoi(n.client.User.Gid)
+	uid, gid, err := getUserGroupID(n.context.user)
 	if err != nil {
-		log.Println("failed to parse gid", err)
+		log.Printf("failed to get user group id: %+v", err)
 		return syscall.EIO
 	}
 
@@ -82,18 +113,18 @@ func (n *Node) getAttrResponse(file *FileMeta, out *fuse.Attr) error {
 	out.Blksize = 4096
 	out.Padding = 0
 
-	return nil
+	return 0
 }
 
 func (n *Node) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
-	file, err := n.client.GetFile(ctx, n.fileID)
+	file, err := n.context.GetFile(ctx, n.fileID)
 	if err != nil {
 		return errToSyscall(err)
 	}
 
 	out.SetTimeout(time.Second)
-	if err := n.getAttrResponse(file, &out.Attr); err != nil {
-		return errToSyscall(err)
+	if err := n.getAttrResponse(file, &out.Attr); err != 0 {
+		return err
 	}
 
 	return 0
@@ -101,10 +132,31 @@ func (n *Node) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut)
 
 func (n *Node) Setattr(ctx context.Context, f fs.FileHandle, in *fuse.SetAttrIn, out *fuse.AttrOut) syscall.Errno {
 	if size, ok := in.GetSize(); ok {
-		err := n.client.SetFileLength(ctx, n.fileID, int64(size))
+		err := n.context.SetFileLength(ctx, n.fileID, int64(size))
 		if err != nil {
 			return errToSyscall(err)
 		}
+	}
+
+	err := n.context.SetFileAttrs(ctx, n.fileID, func(fileMeta *FileMeta) {
+		if atime, ok := in.GetATime(); ok {
+			fileMeta.LastAccess = atime
+		}
+		if mtime, ok := in.GetMTime(); ok {
+			fileMeta.LastWrite = mtime
+		}
+		if mode, ok := in.GetMode(); ok {
+			fileMeta.Permissions = int64(mode)
+		}
+		if uid, ok := in.GetUID(); ok {
+			fileMeta.Owner = int64(uid)
+		}
+		if gid, ok := in.GetGID(); ok {
+			fileMeta.Group = int64(gid)
+		}
+	})
+	if err != nil {
+		return errToSyscall(err)
 	}
 
 	return n.Getattr(ctx, f, out)
@@ -115,15 +167,23 @@ func (n *Node) OnAdd(ctx context.Context) {}
 // 	Readlink(ctx context.Context) ([]byte, syscall.Errno)
 
 func (n *Node) Readlink(ctx context.Context) ([]byte, syscall.Errno) {
-	return nil, syscall.ENOENT
-}
+	file, err := n.context.GetFile(ctx, n.fileID)
+	if err != nil {
+		return nil, errToSyscall(err)
+	}
 
-func standardizeName(name string) string {
-	return filepath.Clean("/" + name)
+	if file.FileType != FileTypeSymlink {
+		return nil, syscall.EINVAL
+	}
+
+	return []byte(file.Link), 0
 }
 
 func errToSyscall(err error) syscall.Errno {
-	if errors.Is(err, ErrNotFound) {
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		return errno
+	} else if errors.Is(err, ErrNotFound) {
 		return syscall.ENOENT
 	} else if errors.Is(err, ErrNotSupported) {
 		return syscall.ENOTSUP
@@ -145,12 +205,12 @@ func (n *Node) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs
 		return nil, syscall.ENOTDIR
 	}
 
-	id, err := n.client.LookupFileInDir(ctx, n.fileID, name)
+	id, err := n.context.LookupFileInDir(ctx, n.fileID, name)
 	if err != nil {
 		return nil, errToSyscall(err)
 	}
 
-	fileMeta, err := n.client.GetFile(ctx, id)
+	fileMeta, err := n.context.GetFile(ctx, id)
 	if err != nil {
 		return nil, errToSyscall(err)
 	}
@@ -158,8 +218,8 @@ func (n *Node) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs
 	out.SetAttrTimeout(time.Second)
 	out.SetEntryTimeout(time.Second)
 
-	if err := n.getAttrResponse(fileMeta, &out.Attr); err != nil {
-		return nil, errToSyscall(err)
+	if err := n.getAttrResponse(fileMeta, &out.Attr); err != 0 {
+		return nil, err
 	}
 
 	if fileMeta.Name == "" {
@@ -173,7 +233,7 @@ func (n *Node) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs
 	child := n.NewInode(ctx, &Node{
 		fileID:   id,
 		fileType: fileMeta.FileType,
-		client:   n.client,
+		context:  n.context,
 	}, stable)
 
 	n.AddChild(fileMeta.Name, child, true)
@@ -186,22 +246,39 @@ func (n *Node) Mkdir(ctx context.Context, name string, mode uint32, out *fuse.En
 		return nil, syscall.ENOTDIR
 	}
 
-	newFileID, err := n.client.CreateFile(ctx, n.fileID, name, FileTypeDirectory)
+	caller, ok := fuse.FromContext(ctx)
+	if !ok {
+		log.Println("no caller in context")
+		return nil, syscall.EIO
+	}
+
+	newFileID, err := n.context.CreateFile(ctx, n.fileID, name, int64(mode), FileTypeDirectory,
+		"", int64(caller.Uid), int64(caller.Gid))
 	if errors.Is(err, ErrNotSupported) {
 		return nil, syscall.ENOTDIR
 	} else if err != nil {
 		return nil, errToSyscall(err)
 	}
 
+	fileMeta, err := n.context.GetFile(ctx, newFileID)
+	if err != nil {
+		return nil, errToSyscall(err)
+	}
+
+	if err := n.getAttrResponse(fileMeta, &out.Attr); err != 0 {
+		return nil, err
+	}
+
 	stable := fs.StableAttr{
-		Mode: 0o755 | fuse.S_IFDIR,
+		Mode: fileMeta.Mode(),
 		Ino:  uint64(newFileID),
 	}
-	child := n.NewInode(ctx, &Node{
-		fileID:   newFileID,
-		fileType: FileTypeDirectory,
-		client:   n.client,
-	}, stable)
+	newNode := &Node{
+		fileID:   fileMeta.FileID,
+		fileType: fileMeta.FileType,
+		context:  n.context,
+	}
+	child := n.NewInode(ctx, newNode, stable)
 
 	n.AddChild(name, child, true)
 
@@ -217,7 +294,47 @@ func (n *Node) Link(ctx context.Context, target fs.InodeEmbedder, name string, o
 }
 
 func (n *Node) Symlink(ctx context.Context, target, name string, out *fuse.EntryOut) (node *fs.Inode, errno syscall.Errno) {
-	return nil, syscall.ENOTSUP
+	if n.fileType != FileTypeDirectory {
+		return nil, syscall.ENOENT
+	}
+
+	caller, ok := fuse.FromContext(ctx)
+	if !ok {
+		log.Println("no caller in context")
+		return nil, syscall.EIO
+	}
+
+	newFileID, err := n.context.CreateFile(ctx, n.fileID, name, int64(0o777), FileTypeSymlink,
+		target, int64(caller.Uid), int64(caller.Gid))
+	if errors.Is(err, ErrNotSupported) {
+		return nil, syscall.ENOTDIR
+	} else if err != nil {
+		return nil, errToSyscall(err)
+	}
+
+	fileMeta, err := n.context.GetFile(ctx, newFileID)
+	if err != nil {
+		return nil, errToSyscall(err)
+	}
+
+	if err := n.getAttrResponse(fileMeta, &out.Attr); err != 0 {
+		return nil, err
+	}
+
+	stable := fs.StableAttr{
+		Mode: fileMeta.Mode(),
+		Ino:  uint64(newFileID),
+	}
+	newNode := &Node{
+		fileID:   fileMeta.FileID,
+		fileType: fileMeta.FileType,
+		context:  n.context,
+	}
+	child := n.NewInode(ctx, newNode, stable)
+
+	n.AddChild(name, child, true)
+
+	return child, 0
 }
 
 func (n *Node) Create(ctx context.Context, name string, flags uint32, mode uint32, out *fuse.EntryOut) (node *fs.Inode, fh fs.FileHandle, fuseFlags uint32, errno syscall.Errno) {
@@ -225,22 +342,37 @@ func (n *Node) Create(ctx context.Context, name string, flags uint32, mode uint3
 		return nil, nil, 0, syscall.ENOENT
 	}
 
-	newFileID, err := n.client.CreateFile(ctx, n.fileID, name, FileTypeRegular)
+	caller, ok := fuse.FromContext(ctx)
+	if !ok {
+		log.Println("no caller in context")
+		return nil, nil, 0, syscall.EIO
+	}
+
+	newFileID, err := n.context.CreateFile(ctx, n.fileID, name, int64(mode), FileTypeRegular, "",
+		int64(caller.Uid), int64(caller.Gid))
 	if errors.Is(err, ErrNotSupported) {
 		return nil, nil, 0, syscall.ENOTDIR
 	} else if err != nil {
 		return nil, nil, 0, errToSyscall(err)
 	}
 
-	stable := fs.StableAttr{
-		Mode: 0o644 | fuse.S_IFREG,
-		Ino:  uint64(newFileID),
+	fileMeta, err := n.context.GetFile(ctx, newFileID)
+	if err != nil {
+		return nil, nil, 0, errToSyscall(err)
 	}
 
+	if err := n.getAttrResponse(fileMeta, &out.Attr); err != 0 {
+		return nil, nil, 0, err
+	}
+
+	stable := fs.StableAttr{
+		Mode: fileMeta.Mode(),
+		Ino:  uint64(newFileID),
+	}
 	newNode := &Node{
-		fileID:   newFileID,
-		fileType: FileTypeRegular,
-		client:   n.client,
+		fileID:   fileMeta.FileID,
+		fileType: fileMeta.FileType,
+		context:  n.context,
 	}
 	child := n.NewInode(ctx, newNode, stable)
 
@@ -254,13 +386,7 @@ func (n *Node) Open(ctx context.Context, flags uint32) (fh fs.FileHandle, fuseFl
 		return nil, 0, syscall.EISDIR
 	}
 
-	newNode := &Node{
-		fileID:   n.fileID,
-		fileType: FileTypeRegular,
-		client:   n.client,
-	}
-
-	return &FileHandle{newNode}, fuse.FOPEN_DIRECT_IO, 0
+	return &FileHandle{n}, fuse.FOPEN_DIRECT_IO, 0
 }
 
 func (n *Node) Unlink(ctx context.Context, name string) syscall.Errno {
@@ -268,12 +394,12 @@ func (n *Node) Unlink(ctx context.Context, name string) syscall.Errno {
 		return syscall.ENOTDIR
 	}
 
-	id, err := n.client.LookupFileInDir(ctx, n.fileID, name)
+	id, err := n.context.LookupFileInDir(ctx, n.fileID, name)
 	if err != nil {
 		return errToSyscall(err)
 	}
 
-	err = n.client.DeleteFile(ctx, id)
+	err = n.context.DeleteFile(ctx, id)
 	if errors.Is(err, ErrNotSupported) {
 		return syscall.EISDIR
 	}
@@ -290,7 +416,7 @@ func (n *Node) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 		return nil, syscall.ENOTDIR
 	}
 
-	files, err := n.client.ReadDir(ctx, n.fileID)
+	files, err := n.context.ReadDir(ctx, n.fileID)
 	if err != nil {
 		return nil, errToSyscall(err)
 	}
@@ -313,12 +439,12 @@ func (n *Node) Rmdir(ctx context.Context, name string) syscall.Errno {
 		return syscall.ENOTDIR
 	}
 
-	id, err := n.client.LookupFileInDir(ctx, n.fileID, name)
+	id, err := n.context.LookupFileInDir(ctx, n.fileID, name)
 	if err != nil {
 		return errToSyscall(err)
 	}
 
-	err = n.client.DeleteDir(ctx, id)
+	err = n.context.DeleteDir(ctx, id)
 	if errors.Is(err, ErrNotSupported) {
 		return syscall.ENOTDIR
 	}
@@ -337,12 +463,12 @@ func (n *Node) Rename(ctx context.Context, name string, newParent fs.InodeEmbedd
 		return syscall.ENOTDIR
 	}
 
-	id, err := n.client.LookupFileInDir(ctx, n.fileID, name)
+	id, err := n.context.LookupFileInDir(ctx, n.fileID, name)
 	if err != nil {
 		return errToSyscall(err)
 	}
 
-	return errToSyscall(n.client.RenameFile(ctx, id, newParentNode.fileID, newName))
+	return errToSyscall(n.context.RenameFile(ctx, id, newParentNode.fileID, newName))
 }
 
 // func (n *Node) CopyFileRange(ctx context.Context, fhIn fs.FileHandle,

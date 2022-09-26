@@ -1,20 +1,42 @@
-package main
+package chronofs
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"io"
 	"log"
 	"os/user"
-	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
-	"github.com/1lann/mc-aware-remote-state/store"
+	"github.com/1lann/chronofs/store"
 	"github.com/cockroachdb/errors"
 	"github.com/jmoiron/sqlx"
 	"golang.org/x/sync/singleflight"
 )
+
+const RootID = 2
+
+type FSClient interface {
+	GetFile(ctx context.Context, fileID int64) (*FileMeta, error)
+	LookupFileInDir(ctx context.Context, dirID int64, name string) (int64, error)
+	LookupFileByPath(ctx context.Context, dirID int64, name string) (int64, error)
+	SetFileAttrs(ctx context.Context, fileID int64, f func(*FileMeta)) error
+	SetFileLength(ctx context.Context, fileID int64, length int64) error
+	CreateFile(ctx context.Context, dirID int64, name string, perms int64, fileType FileType,
+		link string, uid int64, gid int64) (int64, error)
+	DeleteFile(ctx context.Context, fileID int64) error
+	DeleteDir(ctx context.Context, fileID int64) error
+	RenameFile(ctx context.Context, fileID int64, newParent int64, newName string) error
+	ReadDir(ctx context.Context, dirID int64) ([]FileMeta, error)
+	Sync(ctx context.Context) error
+	ReadFile(ctx context.Context, fileID int64, offset int64, data []byte) (int, error)
+	WriteFile(ctx context.Context, fileID int64, offset int64, data []byte) error
+	DumpFileNoCache(ctx context.Context, fileID int64, wr io.Writer) (int64, error)
+}
 
 type fileLock struct {
 	fileID  int64
@@ -64,11 +86,12 @@ type SQLBackedClient struct {
 	pagePower uint8
 }
 
-func NewSQLBackedClient(maxFiles uint64, maxPoolSize uint64, user *user.User, db *sqlx.DB, pagePower uint8) *SQLBackedClient {
+func NewSQLBackedClient(maxFiles uint64, maxPoolSize uint64, defaultUser *user.User,
+	db *sqlx.DB, pagePower uint8) *SQLBackedClient {
 	return &SQLBackedClient{
-		FileMetaPool: NewFileMetaPool(maxFiles),
+		FileMetaPool: NewFileMetaPool(maxFiles, defaultUser),
 		PagePool:     NewPagePool(maxPoolSize, pagePower),
-		User:         user,
+		User:         defaultUser,
 		DB:           db,
 		Q:            store.New(db),
 		fileLock:     make(map[int64]*fileLock),
@@ -100,13 +123,17 @@ func (c *SQLBackedClient) getFileLock(fileID int64) *fileLock {
 
 func FileMetaFromFile(file *store.File) (FileMeta, error) {
 	return FileMeta{
-		FileID:     file.FileID,
-		Parent:     file.Parent,
-		Name:       file.Name,
-		Length:     file.Length,
-		FileType:   FileType(file.FileType),
-		LastWrite:  time.UnixMilli(file.LastWriteAt),
-		LastAccess: time.UnixMilli(file.LastAccessAt),
+		FileID:      file.FileID,
+		Parent:      file.Parent,
+		Name:        file.Name,
+		Length:      file.Length,
+		Link:        file.Link,
+		Permissions: file.Permissions,
+		Owner:       file.OwnerID,
+		Group:       file.GroupID,
+		FileType:    FileType(file.FileType),
+		LastWrite:   time.UnixMilli(file.LastWriteAt),
+		LastAccess:  time.UnixMilli(file.LastAccessAt),
 	}, nil
 }
 
@@ -192,10 +219,10 @@ func (c *SQLBackedClient) LookupFileInDir(ctx context.Context, dirID int64, name
 	return next, nil
 }
 
-func (c *SQLBackedClient) LookupFileByName(ctx context.Context, name string) (int64, error) {
-	trail := filepath.SplitList(name)
+func (c *SQLBackedClient) LookupFileByPath(ctx context.Context, dirID int64, name string) (int64, error) {
+	trail := strings.Split(name, "/")
 
-	var cur int64
+	cur := dirID
 
 	for _, part := range trail {
 		next, err := c.LookupFileInDir(ctx, cur, part)
@@ -207,6 +234,34 @@ func (c *SQLBackedClient) LookupFileByName(ctx context.Context, name string) (in
 	}
 
 	return cur, nil
+}
+
+func (c *SQLBackedClient) SetFileAttrs(ctx context.Context, fileID int64, f func(*FileMeta)) error {
+	lock := c.getFileLock(fileID)
+	lock.Lock()
+	defer func() {
+		lock.Unlock()
+		lock.Release()
+	}()
+
+	// call GetFile to ensure that the file is in the pool
+	_, err := c.GetFile(ctx, fileID)
+	if err != nil {
+		return errors.Wrap(err, "GetFile")
+	}
+
+	return c.FileMetaPool.UpdateFileAttr(fileID, func(file *FileMeta) {
+		fileCopy := *file
+
+		f(&fileCopy)
+
+		file.Link = fileCopy.Link
+		file.Permissions = fileCopy.Permissions
+		file.Owner = fileCopy.Owner
+		file.Group = fileCopy.Group
+		file.LastAccess = fileCopy.LastAccess
+		file.LastWrite = fileCopy.LastWrite
+	})
 }
 
 func (c *SQLBackedClient) SetFileLength(ctx context.Context, fileID int64, length int64) error {
@@ -242,15 +297,70 @@ func (c *SQLBackedClient) SetFileLength(ctx context.Context, fileID int64, lengt
 		}
 	}
 
-	err = c.FileMetaPool.UpdateLength(fileID, length)
+	err = c.FileMetaPool.UpdateFileAttr(fileID, func(f *FileMeta) {
+		f.Length = length
+	})
 	if err != nil {
-		return errors.Wrap(err, "FileMetaPool.UpdateLength")
+		return errors.Wrap(err, "FileMetaPool.UpdateFileAttr")
 	}
 
 	return nil
 }
 
-func (c *SQLBackedClient) CreateFile(ctx context.Context, dirID int64, name string, fileType FileType) (int64, error) {
+// DumpFileNoCache provides an efficient way to extract an entire file from the database without
+// any page caching into a writer. This is used by `extract`. Note that this method will still
+// use the file metadata cache.
+func (c *SQLBackedClient) DumpFileNoCache(ctx context.Context, fileID int64, wr io.Writer) (int64, error) {
+	fileMeta, err := c.GetFile(ctx, fileID)
+	if err != nil {
+		return 0, err
+	}
+
+	maxPage := (fileMeta.Length - 1) >> int64(c.pagePower)
+
+	var bytesWritten int64
+
+	for pageNum := int64(0); pageNum <= maxPage; pageNum++ {
+		pageSize := int64(1) << c.pagePower
+		if pageNum == maxPage {
+			pageSize = int64(fileMeta.Length) - (int64(maxPage) << int64(c.pagePower))
+		}
+
+		pageData, err := c.Q.GetPage(ctx, store.GetPageParams{
+			FileID:        fileID,
+			PageNum:       pageNum,
+			PageSizePower: int64(c.pagePower),
+		})
+		if err != nil {
+			return bytesWritten, errors.Wrapf(err, "fetch page %d", pageNum)
+		}
+
+		pageLimit := pageSize
+		if int64(len(pageData)) < pageLimit {
+			pageLimit = int64(len(pageData))
+		}
+
+		bytesCopied, err := io.Copy(wr, bytes.NewReader(pageData[:pageLimit]))
+		bytesWritten += bytesCopied
+		if err != nil {
+			return bytesWritten, errors.Wrapf(err, "copy page %d", pageNum)
+		}
+
+		if bytesCopied < int64(pageSize) {
+			// zero pad
+			bytesCopied, err := io.Copy(wr, bytes.NewReader(make([]byte, pageSize-bytesCopied)))
+			bytesWritten += bytesCopied
+			if err != nil {
+				return bytesWritten, errors.Wrap(err, "copy zero pad")
+			}
+		}
+	}
+
+	return bytesWritten, nil
+}
+
+func (c *SQLBackedClient) CreateFile(ctx context.Context, dirID int64, name string, perms int64,
+	fileType FileType, link string, uid int64, gid int64) (int64, error) {
 	parentLock := c.getFileLock(dirID)
 	parentLock.RLock()
 	defer func() {
@@ -284,6 +394,10 @@ func (c *SQLBackedClient) CreateFile(ctx context.Context, dirID int64, name stri
 		Name:         name,
 		FileType:     int64(fileType),
 		Length:       0,
+		Link:         link,
+		Permissions:  perms,
+		OwnerID:      uid,
+		GroupID:      gid,
 		LastWriteAt:  now.UnixMilli(),
 		LastAccessAt: now.UnixMilli(),
 	})
@@ -292,13 +406,17 @@ func (c *SQLBackedClient) CreateFile(ctx context.Context, dirID int64, name stri
 	}
 
 	err = c.FileMetaPool.AddFile(FileMeta{
-		FileID:     fileID,
-		Parent:     dirID,
-		Name:       name,
-		Length:     0,
-		FileType:   fileType,
-		LastWrite:  now,
-		LastAccess: now,
+		FileID:      fileID,
+		Parent:      dirID,
+		Name:        name,
+		FileType:    fileType,
+		Length:      0,
+		Link:        link,
+		Permissions: perms,
+		Owner:       uid,
+		Group:       gid,
+		LastWrite:   now,
+		LastAccess:  now,
 	}, true)
 	if err != nil {
 		return 0, errors.Wrap(err, "FileMetaPool.AddFile")
@@ -459,6 +577,10 @@ func (c *SQLBackedClient) Sync(ctx context.Context) error {
 					Name:         file.Name,
 					FileType:     int64(file.FileType),
 					Length:       file.Length,
+					Link:         file.Link,
+					Permissions:  file.Permissions,
+					OwnerID:      file.Owner,
+					GroupID:      file.Group,
 					LastWriteAt:  file.LastWrite.UnixMilli(),
 					LastAccessAt: file.LastAccess.UnixMilli(),
 				})

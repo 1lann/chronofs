@@ -12,6 +12,10 @@ type File struct {
 	Name         string
 	FileType     int64
 	Length       int64
+	Link         string
+	Permissions  int64
+	OwnerID      int64
+	GroupID      int64
 	LastWriteAt  int64
 	LastAccessAt int64
 }
@@ -21,4 +25,9 @@ type Page struct {
 	PageNum       int64
 	PageSizePower int64
 	Data          []byte
+}
+
+type SchemaVersion struct {
+	One     int64
+	Version int64
 }

@@ -1,4 +1,4 @@
-package main
+package chronofs
 
 import (
 	"container/list"

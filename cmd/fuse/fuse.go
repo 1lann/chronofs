@@ -3,9 +3,12 @@ package main
 import (
 	"context"
 	"log"
+	"net/url"
+	"os"
 	"os/user"
 	"time"
 
+	"github.com/1lann/chronofs"
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/jmoiron/sqlx"
 	_ "modernc.org/sqlite"
@@ -18,8 +21,19 @@ func main() {
 	// origDir := "/home/jason/Workspace/testserver/origdata"
 	mntDir := "./mountpoint/x"
 
+	if len(os.Args) < 2 {
+		log.Fatalln("Usage: fuse <database>")
+	}
+
 	ctx := context.Background()
-	db, err := sqlx.ConnectContext(ctx, "sqlite", "file:./time.db?cache=shared")
+
+	u := url.URL{
+		Scheme:   "file",
+		Opaque:   os.Args[1],
+		RawQuery: "cache=shared",
+	}
+
+	db, err := sqlx.ConnectContext(ctx, "sqlite", u.String())
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -52,7 +66,7 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	client := NewSQLBackedClient(10000, 1e8, currentUser, db, 18)
+	client := chronofs.NewSQLBackedClient(10000, 1e8, currentUser, db, 18)
 
 	go func() {
 		t := time.NewTicker(5 * time.Second)
@@ -71,11 +85,7 @@ func main() {
 		}
 	}()
 
-	server, err := fs.Mount(mntDir, &Node{
-		fileID:   2,
-		fileType: FileTypeDirectory,
-		client:   client,
-	}, opts)
+	server, err := fs.Mount(mntDir, chronofs.NewRootNode(client, currentUser), opts)
 	if err != nil {
 		log.Fatalf("Mount fail: %v\n", err)
 	}

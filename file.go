@@ -1,4 +1,4 @@
-package main
+package chronofs
 
 import (
 	"context"
@@ -40,7 +40,7 @@ func (f *FileHandle) Getattr(ctx context.Context, out *fuse.AttrOut) syscall.Err
 }
 
 func (f *FileHandle) Read(ctx context.Context, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
-	bytesRead, err := f.Node.client.ReadFile(context.Background(), f.Node.fileID, off, dest)
+	bytesRead, err := f.Node.context.ReadFile(context.Background(), f.Node.fileID, off, dest)
 	if err != nil {
 		return nil, errToSyscall(err)
 	}
@@ -50,7 +50,7 @@ func (f *FileHandle) Read(ctx context.Context, dest []byte, off int64) (fuse.Rea
 }
 
 func (f *FileHandle) Write(ctx context.Context, data []byte, off int64) (written uint32, errno syscall.Errno) {
-	err := f.Node.client.WriteFile(context.Background(), f.Node.fileID, off, data)
+	err := f.Node.context.WriteFile(context.Background(), f.Node.fileID, off, data)
 	if err != nil {
 		return 0, errToSyscall(err)
 	}
@@ -87,7 +87,7 @@ func (f *FileHandle) Setlkw(ctx context.Context, owner uint64, lk *fuse.FileLock
 }
 
 func (f *FileHandle) Lseek(ctx context.Context, off uint64, whence uint32) (uint64, syscall.Errno) {
-	fileMeta, err := f.client.GetFile(ctx, f.Node.fileID)
+	fileMeta, err := f.context.GetFile(ctx, f.Node.fileID)
 	if err != nil {
 		return 0, errToSyscall(err)
 	}
@@ -112,13 +112,13 @@ func (f *FileHandle) Setattr(ctx context.Context, in *fuse.SetAttrIn, out *fuse.
 }
 
 func (f *FileHandle) Allocate(ctx context.Context, off uint64, size uint64, mode uint32) syscall.Errno {
-	fileMeta, err := f.client.GetFile(ctx, f.Node.fileID)
+	fileMeta, err := f.context.GetFile(ctx, f.Node.fileID)
 	if err != nil {
 		return errToSyscall(err)
 	}
 
 	if off+size > uint64(fileMeta.Length) {
-		err := f.client.SetFileLength(ctx, f.Node.fileID, int64(off+size))
+		err := f.context.SetFileLength(ctx, f.Node.fileID, int64(off+size))
 		if err != nil {
 			return errToSyscall(err)
 		}

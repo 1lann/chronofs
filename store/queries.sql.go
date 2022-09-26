@@ -10,8 +10,9 @@ import (
 )
 
 const createFile = `-- name: CreateFile :one
-INSERT INTO files (parent, name, file_type, length, last_write_at, last_access_at) VALUES (?, ?, ?, ?, ?, ?)
-RETURNING file_id
+INSERT INTO files (
+    parent, name, file_type, length, link, permissions, owner_id, group_id, last_write_at, last_access_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING file_id
 `
 
 type CreateFileParams struct {
@@ -19,6 +20,10 @@ type CreateFileParams struct {
 	Name         string
 	FileType     int64
 	Length       int64
+	Link         string
+	Permissions  int64
+	OwnerID      int64
+	GroupID      int64
 	LastWriteAt  int64
 	LastAccessAt int64
 }
@@ -29,6 +34,10 @@ func (q *Queries) CreateFile(ctx context.Context, arg CreateFileParams) (int64, 
 		arg.Name,
 		arg.FileType,
 		arg.Length,
+		arg.Link,
+		arg.Permissions,
+		arg.OwnerID,
+		arg.GroupID,
 		arg.LastWriteAt,
 		arg.LastAccessAt,
 	)
@@ -68,7 +77,7 @@ func (q *Queries) DeletePage(ctx context.Context, arg DeletePageParams) (int64, 
 }
 
 const getDirectoryFiles = `-- name: GetDirectoryFiles :many
-SELECT file_id, parent, name, file_type, length, last_write_at, last_access_at FROM files WHERE parent = ?
+SELECT file_id, parent, name, file_type, length, link, permissions, owner_id, group_id, last_write_at, last_access_at FROM files WHERE parent = ?
 `
 
 func (q *Queries) GetDirectoryFiles(ctx context.Context, parent int64) ([]File, error) {
@@ -86,6 +95,10 @@ func (q *Queries) GetDirectoryFiles(ctx context.Context, parent int64) ([]File, 
 			&i.Name,
 			&i.FileType,
 			&i.Length,
+			&i.Link,
+			&i.Permissions,
+			&i.OwnerID,
+			&i.GroupID,
 			&i.LastWriteAt,
 			&i.LastAccessAt,
 		); err != nil {
@@ -107,8 +120,7 @@ const getFile = `-- name: GetFile :one
 
 
 
-
-SELECT file_id, parent, name, file_type, length, last_write_at, last_access_at FROM files WHERE file_id = ?
+SELECT file_id, parent, name, file_type, length, link, permissions, owner_id, group_id, last_write_at, last_access_at FROM files WHERE file_id = ?
 `
 
 // CREATE TABLE IF NOT EXISTS files (
@@ -118,13 +130,17 @@ SELECT file_id, parent, name, file_type, length, last_write_at, last_access_at F
 //	name            VARCHAR(4096) NOT NULL,
 //	file_type       TINYINT       NOT NULL,
 //	length          INTEGER       NOT NULL,
+//	link            VARCHAR(4096) NOT NULL, -- symlink target
+//	permissions     INTEGER       NOT NULL, -- unix permissions
+//	owner           INTEGER       NOT NULL, -- unix owner
+//	group           INTEGER       NOT NULL, -- unix group
 //	last_write_at   INTEGER       NOT NULL, -- unix timestamp in millis
 //	last_access_at  INTEGER       NOT NULL -- unix timestamp in millis
 //
 // );
-// INSERT OR IGNORE INTO files (file_id, parent, name, file_type, length, last_write_at, last_access_at) VALUES (0, 0, '__internal_stub_1', 0, 0, 0, 0);
-// INSERT OR IGNORE INTO files (file_id, parent, name, file_type, length, last_write_at, last_access_at) VALUES (1, 0, '__internal_stub_2', 0, 0, 0, 0);
-// INSERT OR IGNORE INTO files (file_id, parent, name, file_type, length, last_write_at, last_access_at) VALUES (2, 0, '__internal_root', 0, 0, 0, 0);
+// INSERT OR IGNORE INTO files (file_id, parent, name, file_type, length, link, last_write_at, last_access_at) VALUES (0, 0, '__internal_stub_1', 0, 0, ”, 0, 0);
+// INSERT OR IGNORE INTO files (file_id, parent, name, file_type, length, link, last_write_at, last_access_at) VALUES (1, 0, '__internal_stub_2', 0, 0, ”, 0, 0);
+// INSERT OR IGNORE INTO files (file_id, parent, name, file_type, length, link, last_write_at, last_access_at) VALUES (2, 0, '__internal_root', 0, 0, ”, 0, 0);
 // CREATE INDEX IF NOT EXISTS files_last_access_at ON files (last_access_at);
 // CREATE INDEX IF NOT EXISTS files_parent ON files (parent);
 // CREATE TABLE IF NOT EXISTS pages (
@@ -132,11 +148,10 @@ SELECT file_id, parent, name, file_type, length, last_write_at, last_access_at F
 //	file_id         INTEGER       NOT NULL,
 //	page_num        INTEGER       NOT NULL,
 //	page_size_power TINYINT       NOT NULL,
-//	data            BLOB          NOT NULL
+//	data            BLOB          NOT NULL,
 //	PRIMARY KEY (file_id, page_num, page_size_power)
 //
 // );
-// CREATE INDEX IF NOT EXISTS pages_last_access_at ON pages (last_access_at);
 func (q *Queries) GetFile(ctx context.Context, fileID int64) (File, error) {
 	row := q.db.QueryRowContext(ctx, getFile, fileID)
 	var i File
@@ -146,6 +161,10 @@ func (q *Queries) GetFile(ctx context.Context, fileID int64) (File, error) {
 		&i.Name,
 		&i.FileType,
 		&i.Length,
+		&i.Link,
+		&i.Permissions,
+		&i.OwnerID,
+		&i.GroupID,
 		&i.LastWriteAt,
 		&i.LastAccessAt,
 	)
@@ -153,7 +172,7 @@ func (q *Queries) GetFile(ctx context.Context, fileID int64) (File, error) {
 }
 
 const getFileInDirectory = `-- name: GetFileInDirectory :one
-SELECT file_id, parent, name, file_type, length, last_write_at, last_access_at FROM files WHERE parent = ? AND name = ?
+SELECT file_id, parent, name, file_type, length, link, permissions, owner_id, group_id, last_write_at, last_access_at FROM files WHERE parent = ? AND name = ?
 `
 
 type GetFileInDirectoryParams struct {
@@ -170,6 +189,10 @@ func (q *Queries) GetFileInDirectory(ctx context.Context, arg GetFileInDirectory
 		&i.Name,
 		&i.FileType,
 		&i.Length,
+		&i.Link,
+		&i.Permissions,
+		&i.OwnerID,
+		&i.GroupID,
 		&i.LastWriteAt,
 		&i.LastAccessAt,
 	)
@@ -212,7 +235,9 @@ func (q *Queries) RenameFile(ctx context.Context, arg RenameFileParams) (int64, 
 }
 
 const updateFile = `-- name: UpdateFile :exec
-UPDATE files SET parent = ?, name = ?, file_type = ?, length = ?, last_write_at = ?, last_access_at = ? WHERE file_id = ?
+UPDATE files SET parent = ?, name = ?, file_type = ?, length = ?, link = ?, permissions = ?,
+    owner_id = ?, group_id = ?, last_write_at = ?, last_access_at = ?
+WHERE file_id = ?
 `
 
 type UpdateFileParams struct {
@@ -220,6 +245,10 @@ type UpdateFileParams struct {
 	Name         string
 	FileType     int64
 	Length       int64
+	Link         string
+	Permissions  int64
+	OwnerID      int64
+	GroupID      int64
 	LastWriteAt  int64
 	LastAccessAt int64
 	FileID       int64
@@ -231,6 +260,10 @@ func (q *Queries) UpdateFile(ctx context.Context, arg UpdateFileParams) error {
 		arg.Name,
 		arg.FileType,
 		arg.Length,
+		arg.Link,
+		arg.Permissions,
+		arg.OwnerID,
+		arg.GroupID,
 		arg.LastWriteAt,
 		arg.LastAccessAt,
 		arg.FileID,

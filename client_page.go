@@ -1,4 +1,4 @@
-package main
+package chronofs
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/1lann/mc-aware-remote-state/store"
+	"github.com/1lann/chronofs/store"
 	"github.com/cockroachdb/errors"
 )
 
@@ -206,7 +206,12 @@ func (c *SQLBackedClient) writeFileNoLock(ctx context.Context, fileMeta *FileMet
 
 	// determine if file needs to be extended
 	if maxLength > fileMeta.Length {
-		c.FileMetaPool.UpdateLength(fileMeta.FileID, maxLength)
+		err := c.FileMetaPool.UpdateFileAttr(fileMeta.FileID, func(f *FileMeta) {
+			f.Length = maxLength
+		})
+		if err != nil {
+			return errors.Wrap(err, "FileMetaPool.UpdateFileAttr")
+		}
 	}
 
 	return nil

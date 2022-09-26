@@ -1,7 +1,9 @@
-package main
+package chronofs
 
 import (
 	"container/list"
+	"log"
+	"os/user"
 	"sort"
 	"sync"
 	"time"
@@ -14,27 +16,39 @@ type FileType uint8
 const (
 	FileTypeRegular FileType = iota
 	FileTypeDirectory
+	FileTypeSymlink
 )
 
 type FileMeta struct {
-	FileID     int64
-	Parent     int64
-	Name       string
-	Length     int64
-	FileType   FileType
-	LastWrite  time.Time
-	LastAccess time.Time
-	dirty      bool
-	pending    bool
-	tombstone  bool
-	element    *list.Element
+	FileID      int64
+	Parent      int64
+	Name        string
+	Length      int64
+	FileType    FileType
+	Link        string
+	Permissions int64
+	Owner       int64
+	Group       int64
+	LastWrite   time.Time
+	LastAccess  time.Time
+	dirty       bool
+	pending     bool
+	tombstone   bool
+	element     *list.Element
 }
 
 func (f *FileMeta) Mode() uint32 {
-	if f.FileType == FileTypeDirectory {
-		return 0o755 | fuse.S_IFDIR
-	} else {
-		return 0o644 | fuse.S_IFREG
+	perms := uint32(f.Permissions & 0o777)
+	switch f.FileType {
+	case FileTypeRegular:
+		return fuse.S_IFREG | perms
+	case FileTypeDirectory:
+		return fuse.S_IFDIR | perms
+	case FileTypeSymlink:
+		return fuse.S_IFLNK | perms
+	default:
+		log.Println("unknown file type??")
+		return fuse.S_IFREG | perms
 	}
 }
 
@@ -47,14 +61,16 @@ type FileMetaPool struct {
 	dll           *list.List
 	numFiles      uint64
 	maxFiles      uint64
+	defaultUser   *user.User
 }
 
-func NewFileMetaPool(maxFiles uint64) *FileMetaPool {
+func NewFileMetaPool(maxFiles uint64, defaultUser *user.User) *FileMetaPool {
 	return &FileMetaPool{
 		files:         make(map[int64]*FileMeta),
 		filesByParent: make(map[int64]map[string]int64),
 		dll:           list.New(),
 		maxFiles:      maxFiles,
+		defaultUser:   defaultUser,
 	}
 }
 
@@ -131,6 +147,12 @@ func (p *FileMetaPool) AddFile(meta FileMeta, dirty bool) error {
 	file.FileType = meta.FileType
 	file.Parent = meta.Parent
 	file.Name = meta.Name
+	file.Link = meta.Link
+	file.Permissions = meta.Permissions
+	file.Owner = meta.Owner
+	file.Group = meta.Group
+	file.LastWrite = meta.LastWrite
+	file.LastAccess = meta.LastAccess
 	if dirty {
 		p.markDirty(file)
 	}
@@ -208,14 +230,23 @@ func (p *FileMetaPool) GetFile(fileID int64) (FileMeta, error) {
 	defer p.mu.Unlock()
 
 	if fileID >= 0 && fileID <= 2 {
+		uid, gid, err := getUserGroupID(p.defaultUser)
+		if err != nil {
+			return FileMeta{}, err
+		}
+
 		return FileMeta{
-			FileID:     0,
-			Parent:     2,
-			Name:       "",
-			Length:     0,
-			FileType:   FileTypeDirectory,
-			LastWrite:  time.Unix(0, 0),
-			LastAccess: time.Unix(0, 0),
+			FileID:      2,
+			Parent:      0,
+			Name:        "",
+			Length:      0,
+			FileType:    FileTypeDirectory,
+			Link:        "",
+			Permissions: 0o755,
+			Owner:       uid,
+			Group:       gid,
+			LastWrite:   time.Unix(0, 0),
+			LastAccess:  time.Unix(0, 0),
 		}, nil
 	}
 
@@ -233,7 +264,7 @@ func (p *FileMetaPool) GetFile(fileID int64) (FileMeta, error) {
 	return *file, nil
 }
 
-func (p *FileMetaPool) UpdateLength(fileID int64, fileLength int64) error {
+func (p *FileMetaPool) UpdateFileAttr(fileID int64, f func(*FileMeta)) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -242,11 +273,8 @@ func (p *FileMetaPool) UpdateLength(fileID int64, fileLength int64) error {
 		return ErrNotFound
 	}
 
-	if file.Length != fileLength {
-		p.markDirty(file)
-		file.Length = fileLength
-	}
-
+	f(file)
+	p.markDirty(file)
 	p.MarkRead(file)
 
 	return nil
