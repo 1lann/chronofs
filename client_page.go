@@ -149,7 +149,7 @@ func (c *SQLBackedClient) writePage(ctx context.Context, fileID int64, page uint
 			// log.Printf("I just wrote inside %q at page %d offset %d with contents %q", fileID, page, offset, existing)
 		})
 		if errors.Is(err, ErrTooMuchDirt) {
-			log.Println("too much dirt to write page, retrying:", fileID, page)
+			log.Printf("%v, retrying file ID: %v, page: %v", err, fileID, page)
 			time.Sleep(time.Millisecond * 100)
 			continue
 		} else if errors.Is(err, ErrNotFound) {

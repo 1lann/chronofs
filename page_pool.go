@@ -3,6 +3,7 @@ package chronofs
 import (
 	"container/list"
 	"io/fs"
+	"log"
 	"sync"
 
 	"github.com/cockroachdb/errors"
@@ -92,6 +93,11 @@ func (p *PagePool) AddPage(key PageKey, data []byte, dirty bool) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	if p.size > (p.maxSize + 1e10) {
+		log.Println("underflow has occurred in AddPage:", p.size, p.maxSize)
+		p.size = 0
+	}
+
 	page, ok := p.pages[key]
 	if !ok {
 		if !p.makeSpace(uint64(len(data))) {
@@ -101,11 +107,12 @@ func (p *PagePool) AddPage(key PageKey, data []byte, dirty bool) error {
 		page = &Page{}
 		p.pages[key] = page
 	} else {
-		p.size -= uint64(len(page.Data))
-
-		if !p.makeSpace(uint64(len(data))) {
+		if len(data) > len(page.Data) && !p.makeSpace(uint64(len(data)-len(page.Data))) {
 			return ErrTooMuchDirt
 		}
+
+		p.size -= uint64(len(page.Data))
+		dirty = true
 	}
 
 	p.size += uint64(len(data))
@@ -147,18 +154,23 @@ func (p *PagePool) WritePage(key PageKey, minLength uint64, f func(data []byte))
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	if p.size > (p.maxSize + 1e10) {
+		log.Println("underflow has occurred in WritePage:", p.size, p.maxSize)
+		p.size = 0
+	}
+
 	page, ok := p.pages[key]
 	if !ok {
 		return ErrNotFound
 	}
 
 	if page.pending {
-		return ErrTooMuchDirt
+		return errors.Wrap(ErrTooMuchDirt, "page is pending")
 	}
 
 	if uint64(len(page.Data)) < minLength {
 		if !p.makeSpace(minLength - uint64(len(page.Data))) {
-			return ErrTooMuchDirt
+			return errors.Wrap(ErrTooMuchDirt, "not enough space")
 		}
 
 		p.size += (minLength - uint64(len(page.Data)))

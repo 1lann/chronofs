@@ -3,11 +3,16 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
+	"net/http/pprof"
 	"net/url"
 	"os"
 	"os/signal"
 	"os/user"
+	"strconv"
 	"time"
+
+	"flag"
 
 	"github.com/1lann/chronofs"
 	"github.com/hanwen/go-fuse/v2/fs"
@@ -15,11 +20,9 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// ExampleLoopbackReuse shows how to build a file system on top of the
-// loopback file system.
+var pprofPort = flag.Int("pprof", 0, "Port to bind a pprof HTTP server on. Set to 0 to disable.")
+
 func main() {
-	// mntDir := "/home/jason/Workspace/testserver/serverdata"
-	// origDir := "/home/jason/Workspace/testserver/origdata"
 	if len(os.Args) < 3 {
 		log.Fatalln("Usage: fuse <database> <mountpoint>")
 	}
@@ -96,6 +99,17 @@ func main() {
 	server, err := fs.Mount(os.Args[2], chronofs.NewRootNode(client, currentUser), opts)
 	if err != nil {
 		log.Fatalf("Mount fail: %v\n", err)
+	}
+
+	if *pprofPort != 0 {
+		port := strconv.Itoa(*pprofPort)
+		go func() {
+			log.Println("running pprof server on 127.0.0.1:" + port)
+			err := http.ListenAndServe("127.0.0.1:"+port, http.HandlerFunc(pprof.Index))
+			if err != nil {
+				log.Println("pprof server error:", err)
+			}
+		}()
 	}
 
 	log.Println("mounted, FUSE server is running, ctrl+c to unmount")
