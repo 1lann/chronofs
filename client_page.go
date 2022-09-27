@@ -44,7 +44,7 @@ func (c *SQLBackedClient) readPage(ctx context.Context, fileID int64, pageNum ui
 
 			err = c.PagePool.AddPage(pageKey, data, false)
 			if err != nil {
-				log.Println("error adding page to pool:", fileID, pageNum)
+				log.Println("error adding page to pool:", fileID, pageNum, err)
 				// skip handling error for now, the pool is merely a cache
 			}
 

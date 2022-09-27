@@ -159,7 +159,7 @@ func (c *SQLBackedClient) GetFile(ctx context.Context, fileID int64) (*FileMeta,
 
 			err = c.FileMetaPool.AddFile(fileMeta, false)
 			if err != nil {
-				log.Println("error adding file to pool:", fileID)
+				log.Println("error adding file to pool:", fileID, err)
 				// skip handling error for now, the pool is merely a cache
 			}
 
@@ -205,7 +205,7 @@ func (c *SQLBackedClient) LookupFileInDir(ctx context.Context, dirID int64, name
 
 		err = c.FileMetaPool.AddFile(fileMeta, false)
 		if err != nil {
-			log.Println("error adding file to pool:", next)
+			log.Println("error adding file to pool:", next, err)
 			// skip handling error for now, the pool is merely a cache
 		}
 

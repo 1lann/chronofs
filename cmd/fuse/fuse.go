@@ -28,11 +28,11 @@ func main() {
 
 	q := url.Values{}
 	q.Set("cache", "shared")
+	q.Add("_pragma", "page_size(65536)")
 	q.Add("_pragma", "busy_timeout(5000)")
 	q.Add("_pragma", "synchronous(NORMAL)")
 	q.Add("_pragma", "journal_mode(WAL)")
 	q.Add("_pragma", "wal_autocheckpoint(0)")
-	q.Add("_pragma", "page_size(65536)")
 
 	u := url.URL{
 		Scheme:   "file",
