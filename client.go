@@ -471,8 +471,6 @@ func (c *SQLBackedClient) DeleteDir(ctx context.Context, fileID int64) error {
 }
 
 func (c *SQLBackedClient) RenameFile(ctx context.Context, fileID int64, newParent int64, newName string) error {
-	log.Println("rename", fileID, newParent, newName)
-
 	dirLock := c.getFileLock(newParent)
 	dirLock.RLock()
 	defer func() {
@@ -491,8 +489,6 @@ func (c *SQLBackedClient) RenameFile(ctx context.Context, fileID int64, newParen
 	if err != nil {
 		return err
 	}
-
-	log.Printf("renaming from %q to %q for %d", fileMeta.Name, newName, fileMeta.FileID)
 
 	if fileMeta.FileType != FileTypeDirectory {
 		return ErrNotFound
