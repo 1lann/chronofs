@@ -289,6 +289,8 @@ func (p *PagePool) CompletePending() {
 	}
 
 	p.pendingPages = nil
+
+	log.Println("accounting post CompletePending:", p.debugTooMuchDirt())
 }
 
 func (p *PagePool) markDirty(page *Page) {

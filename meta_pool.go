@@ -302,8 +302,8 @@ func (p *FileMetaPool) CompletePending() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	for _, page := range p.pendingFiles {
-		page.pending = false
+	for _, file := range p.pendingFiles {
+		file.pending = false
 	}
 
 	p.pendingFiles = nil

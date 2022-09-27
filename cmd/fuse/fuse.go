@@ -137,7 +137,7 @@ func main() {
 				ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 				defer cancel()
 
-				if err := client.Sync(ctx); err != nil {
+				if err := client.Sync(ctx, true); err != nil {
 					log.Println("graceful termination error:", err)
 				}
 
