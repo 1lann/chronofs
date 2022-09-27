@@ -388,6 +388,7 @@ func (c *SQLBackedClient) CreateFile(ctx context.Context, dirID int64, name stri
 
 	now := time.Now().Round(time.Millisecond)
 
+	start := time.Now()
 	// create file
 	fileID, err := c.Q.CreateFile(ctx, store.CreateFileParams{
 		Parent:       dirID,
@@ -401,6 +402,9 @@ func (c *SQLBackedClient) CreateFile(ctx context.Context, dirID int64, name stri
 		LastWriteAt:  now.UnixMilli(),
 		LastAccessAt: now.UnixMilli(),
 	})
+	if time.Since(start) > time.Second {
+		log.Println("CreateFile took a particularly long time:", time.Since(start))
+	}
 	if err != nil {
 		return 0, errors.Wrap(err, "store.CreateFile")
 	}
