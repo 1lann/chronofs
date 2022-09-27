@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"os/signal"
 	"os/user"
 	"time"
 
@@ -82,7 +83,23 @@ func main() {
 	if err != nil {
 		log.Fatalf("Mount fail: %v\n", err)
 	}
-	log.Printf("files under %s cannot be deleted if they are opened", os.Args[2])
+
+	log.Println("mounted, FUSE server is running, ctrl+c to unmount")
+
+	defer func() {
+		server.Unmount()
+	}()
+
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt)
+	go func() {
+		for range c {
+			log.Println("ctrl+c received, unmounting")
+			if err := server.Unmount(); err != nil {
+				log.Println("unmount error:", err)
+			}
+		}
+	}()
 
 	server.Wait()
 }
