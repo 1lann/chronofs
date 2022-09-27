@@ -152,6 +152,10 @@ func (p *PagePool) WritePage(key PageKey, minLength uint64, f func(data []byte))
 		return ErrNotFound
 	}
 
+	if page.pending {
+		return ErrTooMuchDirt
+	}
+
 	if uint64(len(page.Data)) < minLength {
 		if !p.makeSpace(minLength - uint64(len(page.Data))) {
 			return ErrTooMuchDirt
@@ -179,7 +183,6 @@ func (p *PagePool) SwapDirtyPages() []Page {
 
 	for i, page := range p.dirtyPages {
 		pages[i] = *page
-		copy(pages[i].Data, page.Data)
 		page.dirty = false
 		page.pending = true
 	}
