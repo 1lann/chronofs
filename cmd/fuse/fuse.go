@@ -19,10 +19,8 @@ import (
 func main() {
 	// mntDir := "/home/jason/Workspace/testserver/serverdata"
 	// origDir := "/home/jason/Workspace/testserver/origdata"
-	mntDir := "./mountpoint/x"
-
-	if len(os.Args) < 2 {
-		log.Fatalln("Usage: fuse <database>")
+	if len(os.Args) < 3 {
+		log.Fatalln("Usage: fuse <database> <mountpoint>")
 	}
 
 	ctx := context.Background()
@@ -85,11 +83,11 @@ func main() {
 		}
 	}()
 
-	server, err := fs.Mount(mntDir, chronofs.NewRootNode(client, currentUser), opts)
+	server, err := fs.Mount(os.Args[2], chronofs.NewRootNode(client, currentUser), opts)
 	if err != nil {
 		log.Fatalf("Mount fail: %v\n", err)
 	}
-	log.Printf("files under %s cannot be deleted if they are opened", mntDir)
+	log.Printf("files under %s cannot be deleted if they are opened", os.Args[2])
 
 	server.Wait()
 }
