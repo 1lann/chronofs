@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/signal"
 	"os/user"
-	"sync"
 	"time"
 
 	"github.com/1lann/chronofs"
@@ -106,7 +105,6 @@ func main() {
 	}()
 
 	termination := make(chan struct{})
-	var once sync.Once
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
