@@ -64,13 +64,13 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	client := chronofs.NewSQLBackedClient(10000, 1e8, currentUser, db, 18)
+	client := chronofs.NewSQLBackedClient(50000, 5e8, currentUser, db, 18)
 
 	syncCtx, syncCancel := context.WithCancel(context.Background())
 	syncDone := make(chan struct{})
 
 	go func() {
-		t := time.NewTicker(5 * time.Second)
+		t := time.NewTicker(2 * time.Second)
 
 		defer func() {
 			t.Stop()
