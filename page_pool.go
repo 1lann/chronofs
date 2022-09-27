@@ -313,6 +313,7 @@ func (p *PagePool) makeSpace(bytes uint64) bool {
 		next := current.Next()
 		page := current.Value.(*Page)
 		if page.dirty || page.pending {
+			current = next
 			continue
 		}
 		p.forgetPage(page)

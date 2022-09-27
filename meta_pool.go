@@ -336,6 +336,7 @@ func (p *FileMetaPool) makeSpace() bool {
 		next := current.Next()
 		file := current.Value.(*FileMeta)
 		if file.dirty || file.pending {
+			current = next
 			continue
 		}
 		p.forgetFile(file)
