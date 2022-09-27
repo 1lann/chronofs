@@ -621,21 +621,22 @@ func (c *SQLBackedClient) Sync(ctx context.Context, final ...bool) error {
 	}()
 	if err != nil {
 		tx.Rollback()
+		c.FileMetaPool.FailPending()
+		c.PagePool.FailPending()
 		return errors.Wrap(err, "tx execution")
 	}
 
 	err = tx.Commit()
 	if err != nil {
+		c.FileMetaPool.FailPending()
+		c.PagePool.FailPending()
 		return errors.Wrap(err, "Commit")
 	}
 
 	if len(final) == 0 || !final[0] {
-		log.Println("marking pending as complete:", final)
 		// complete pending only when it's not the final sync
 		c.FileMetaPool.CompletePending()
 		c.PagePool.CompletePending()
-	} else {
-		log.Println("skipping marking pending as complete:", final)
 	}
 
 	return nil

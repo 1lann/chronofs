@@ -298,6 +298,22 @@ func (p *FileMetaPool) SwapDirtyFiles() []FileMeta {
 	return files
 }
 
+func (p *FileMetaPool) FailPending() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for _, file := range p.pendingFiles {
+		file.pending = false
+
+		if !file.dirty {
+			file.dirty = true
+			p.dirtyFiles = append(p.dirtyFiles, file)
+		}
+	}
+
+	p.pendingFiles = nil
+}
+
 func (p *FileMetaPool) CompletePending() {
 	p.mu.Lock()
 	defer p.mu.Unlock()

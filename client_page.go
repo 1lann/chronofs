@@ -37,7 +37,7 @@ func (c *SQLBackedClient) readPage(ctx context.Context, fileID int64, pageNum ui
 				if err := c.PagePool.AddPage(pageKey, nil, true); err != nil {
 					return nil, errors.Wrap(err, "AddPage for newly created page")
 				}
-				return ([]byte)(nil), nil
+				return []byte{}, nil
 			} else if err != nil {
 				return nil, errors.Wrap(err, "store.GetPage")
 			}
@@ -54,7 +54,7 @@ func (c *SQLBackedClient) readPage(ctx context.Context, fileID int64, pageNum ui
 			if err := c.PagePool.AddPage(pageKey, nil, true); err != nil {
 				return nil, errors.Wrap(err, "AddPage for newly created page")
 			}
-			return ([]byte)(nil), nil
+			return []byte{}, nil
 		} else if err != nil {
 			return nil, errors.Wrap(err, "PagePool.GetPage")
 		}

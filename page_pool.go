@@ -280,6 +280,22 @@ func (p *PagePool) SwapDirtyPages() []Page {
 	return pages
 }
 
+func (p *PagePool) FailPending() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for _, page := range p.pendingPages {
+		page.pending = false
+
+		if !page.dirty {
+			page.dirty = true
+			p.dirtyPages = append(p.dirtyPages, page)
+		}
+	}
+
+	p.pendingPages = nil
+}
+
 func (p *PagePool) CompletePending() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -289,8 +305,6 @@ func (p *PagePool) CompletePending() {
 	}
 
 	p.pendingPages = nil
-
-	log.Println("accounting post CompletePending:", p.debugTooMuchDirt())
 }
 
 func (p *PagePool) markDirty(page *Page) {
