@@ -630,9 +630,12 @@ func (c *SQLBackedClient) Sync(ctx context.Context, final ...bool) error {
 	}
 
 	if len(final) == 0 || !final[0] {
+		log.Println("marking pending as complete")
 		// complete pending only when it's not the final sync
 		c.FileMetaPool.CompletePending()
 		c.PagePool.CompletePending()
+	} else {
+		log.Println("skipping marking pending as complete")
 	}
 
 	return nil
