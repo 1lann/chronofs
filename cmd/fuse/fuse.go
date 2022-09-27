@@ -75,7 +75,7 @@ func main() {
 
 		for {
 			select {
-			case <-ctx.Done():
+			case <-syncCtx.Done():
 				return
 			case <-t.C:
 			}

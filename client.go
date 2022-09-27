@@ -565,6 +565,10 @@ func (c *SQLBackedClient) Sync(ctx context.Context) error {
 		q := c.Q.WithTx(tx)
 
 		for _, file := range files {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+
 			if file.tombstone {
 				_, err := q.DeleteFile(ctx, file.FileID)
 				if err != nil {
@@ -591,6 +595,10 @@ func (c *SQLBackedClient) Sync(ctx context.Context) error {
 		}
 
 		for _, page := range pages {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+
 			if page.tombstone {
 				_, err := q.DeletePage(ctx, store.DeletePageParams{
 					FileID:        page.Key.FileID,
