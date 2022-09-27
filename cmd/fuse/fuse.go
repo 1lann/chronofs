@@ -24,7 +24,7 @@ var pprofPort = flag.Int("pprof", 0, "Port to bind a pprof HTTP server on. Set t
 func main() {
 	flag.Parse()
 
-	if len(flag.Args()) < 3 {
+	if len(flag.Args()) < 2 {
 		log.Fatalln("Usage: fuse <database> <mountpoint>")
 	}
 
