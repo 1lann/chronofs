@@ -22,6 +22,8 @@ import (
 
 var pprofPort = flag.Int("pprof", 0, "Port to bind a pprof HTTP server on. Set to 0 to disable.")
 var logFile = flag.String("log", "", "Log file to write to. Disabled by default.")
+var cacheBytes = flag.Int("cache-bytes", 500e6, "Number of bytes to cache file page data in memory.")
+var cacheFiles = flag.Int("cache-files", 50000, "Number of files to cache metadata in memory.")
 
 func main() {
 	flag.Parse()
@@ -81,7 +83,7 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	client := chronofs.NewSQLBackedClient(50000, 5e8, currentUser, db, 18)
+	client := chronofs.NewSQLBackedClient(uint64(*cacheFiles), uint64(*cacheBytes), currentUser, db, 18)
 
 	syncCtx, syncCancel := context.WithCancel(context.Background())
 	syncDone := make(chan struct{})
