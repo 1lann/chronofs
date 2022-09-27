@@ -542,7 +542,7 @@ func (c *SQLBackedClient) ReadDir(ctx context.Context, dirID int64) ([]FileMeta,
 }
 
 // syncs the state of the filesystem to disk.
-func (c *SQLBackedClient) Sync(ctx context.Context) error {
+func (c *SQLBackedClient) Sync(ctx context.Context, final ...bool) error {
 	files := c.FileMetaPool.SwapDirtyFiles()
 	pages := c.PagePool.SwapDirtyPages()
 
@@ -629,8 +629,11 @@ func (c *SQLBackedClient) Sync(ctx context.Context) error {
 		return errors.Wrap(err, "Commit")
 	}
 
-	c.FileMetaPool.CompletePending()
-	c.PagePool.CompletePending()
+	if len(final) == 0 || !final[0] {
+		// complete pending only when it's not the final sync
+		c.FileMetaPool.CompletePending()
+		c.PagePool.CompletePending()
+	}
 
 	return nil
 }

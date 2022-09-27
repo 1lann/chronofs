@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"os/user"
+	"sync"
 	"time"
 
 	"github.com/1lann/chronofs"
@@ -105,25 +106,33 @@ func main() {
 	}()
 
 	termination := make(chan struct{})
+	var once sync.Once
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
 	go func() {
 		for range c {
-			syncCancel()
 			log.Println("ctrl+c received, unmounting...")
 			if err := server.Unmount(); err != nil {
 				log.Println("unmount error:", err)
-			}
-			log.Println("finishing up sync...")
-			<-syncDone
+				log.Println("you may retry unmounting by sending ctrl+c again")
+			} else {
+				syncCancel()
 
-			if err := client.Sync(context.Background()); err != nil {
-				log.Println("graceful termination error:", err)
-			}
+				log.Println("finishing up sync...")
+				<-syncDone
 
-			close(termination)
-			return
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+				defer cancel()
+
+				if err := client.Sync(ctx); err != nil {
+					log.Println("graceful termination error:", err)
+				}
+
+				close(termination)
+
+				return
+			}
 		}
 	}()
 
