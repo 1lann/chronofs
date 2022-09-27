@@ -44,6 +44,11 @@ func main() {
 		log.Fatalln(err)
 	}
 
+	db.SetMaxOpenConns(2)
+	db.SetMaxIdleConns(2)
+	db.SetConnMaxIdleTime(-1)
+	db.SetConnMaxLifetime(-1)
+
 	usr, err := user.Current()
 	if err != nil {
 		log.Fatalln(err)
@@ -52,15 +57,6 @@ func main() {
 	client := chronofs.NewSQLBackedClient(10000, 1e7, usr, db, 18)
 
 	fsys := chronofs.NewRootStdFS(client)
-
-	// entries, err := fsys.ReadDir("/")
-	// if err != nil {
-	// 	log.Fatalln(err)
-	// }
-
-	// for _, entry := range entries {
-	// 	log.Println(entry.Name())
-	// }
 
 	log.Println("setup took:", time.Since(start))
 

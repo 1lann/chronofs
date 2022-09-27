@@ -61,6 +61,11 @@ func main() {
 		log.Fatalln(err)
 	}
 
+	db.SetMaxOpenConns(2)
+	db.SetMaxIdleConns(2)
+	db.SetConnMaxIdleTime(-1)
+	db.SetConnMaxLifetime(-1)
+
 	timeout := time.Second
 	opts := &fs.Options{
 		AttrTimeout:  &timeout,
