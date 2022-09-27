@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"io"
 	"log"
 	"net/http"
 	_ "net/http/pprof"
@@ -20,12 +21,23 @@ import (
 )
 
 var pprofPort = flag.Int("pprof", 0, "Port to bind a pprof HTTP server on. Set to 0 to disable.")
+var logFile = flag.String("log", "", "Log file to write to. Disabled by default.")
 
 func main() {
 	flag.Parse()
 
 	if len(flag.Args()) < 2 {
 		log.Fatalln("Usage: fuse <database> <mountpoint>")
+	}
+
+	if *logFile != "" {
+		f, err := os.OpenFile(*logFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+		if err != nil {
+			log.Fatalln(err)
+		}
+		log.SetOutput(io.MultiWriter(os.Stderr, f))
+
+		defer f.Close()
 	}
 
 	ctx := context.Background()
