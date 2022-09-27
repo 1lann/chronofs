@@ -62,11 +62,25 @@ func main() {
 
 	client := chronofs.NewSQLBackedClient(10000, 1e8, currentUser, db, 18)
 
+	syncCtx, syncCancel := context.WithCancel(context.Background())
+	syncDone := make(chan struct{})
+
 	go func() {
 		t := time.NewTicker(5 * time.Second)
 
-		for range t.C {
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+		defer func() {
+			t.Stop()
+			close(syncDone)
+		}()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+			}
+
+			ctx, cancel := context.WithTimeout(syncCtx, time.Second*10)
 			t := time.Now()
 			// log.Println("starting sync")
 			err := client.Sync(ctx)
@@ -90,16 +104,30 @@ func main() {
 		server.Unmount()
 	}()
 
+	termination := make(chan struct{})
+
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
 	go func() {
 		for range c {
-			log.Println("ctrl+c received, unmounting")
+			syncCancel()
+			log.Println("ctrl+c received, unmounting...")
 			if err := server.Unmount(); err != nil {
 				log.Println("unmount error:", err)
 			}
+			log.Println("finishing up sync...")
+			<-syncDone
+
+			if err := client.Sync(context.Background()); err != nil {
+				log.Println("graceful termination error:", err)
+			}
+
+			close(termination)
 		}
 	}()
 
 	server.Wait()
+	<-termination
+
+	log.Println("gracefully terminated")
 }
