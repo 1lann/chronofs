@@ -25,28 +25,23 @@ func main() {
 
 	ctx := context.Background()
 
+	q := url.Values{}
+	q.Set("cache", "shared")
+	q.Set("_pragma", "busy_timeout(5000)")
+	q.Set("_pragma", "synchronous(NORMAL)")
+	q.Set("_pragma", "journal_mode(WAL)")
+	q.Set("_pragma", "wal_autocheckpoint(0)")
+	q.Set("_pragma", "page_size(65536)")
+
 	u := url.URL{
 		Scheme:   "file",
 		Opaque:   os.Args[1],
-		RawQuery: "cache=shared",
+		RawQuery: q.Encode(),
 	}
 
 	db, err := sqlx.ConnectContext(ctx, "sqlite", u.String())
 	if err != nil {
 		log.Fatalln(err)
-	}
-
-	for _, pragma := range []string{
-		`PRAGMA busy_timeout = 5000;`,
-		`PRAGMA synchronous = NORMAL;`,
-		`PRAGMA journal_mode = WAL;`,
-		`PRAGMA wal_autocheckpoint = 0;`,
-		`PRAGMA page_size = 65536;`,
-	} {
-		_, err = db.ExecContext(ctx, pragma)
-		if err != nil {
-			log.Fatalln(err)
-		}
 	}
 
 	timeout := time.Second
