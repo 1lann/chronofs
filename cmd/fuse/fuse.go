@@ -113,12 +113,11 @@ func main() {
 	go func() {
 		for range c {
 			log.Println("ctrl+c received, unmounting...")
+			syncCancel()
 			if err := server.Unmount(); err != nil {
 				log.Println("unmount error:", err)
 				log.Println("you may retry unmounting by sending ctrl+c again")
 			} else {
-				syncCancel()
-
 				log.Println("finishing up sync...")
 				<-syncDone
 
