@@ -123,6 +123,7 @@ func main() {
 			}
 
 			close(termination)
+			return
 		}
 	}()
 
