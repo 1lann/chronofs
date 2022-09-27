@@ -331,13 +331,19 @@ func (p *FileMetaPool) MarkRead(file *FileMeta) {
 
 // Evict the least recently used files to make space for bytes. Assumes lock is held.
 func (p *FileMetaPool) makeSpace() bool {
-	for p.numFiles+1 > p.maxFiles {
-		front := p.dll.Front()
-		file := front.Value.(*FileMeta)
+	current := p.dll.Front()
+	for p.numFiles+1 > p.maxFiles && current != nil {
+		next := current.Next()
+		file := current.Value.(*FileMeta)
 		if file.dirty || file.pending {
-			return false
+			continue
 		}
 		p.forgetFile(file)
+		current = next
+	}
+
+	if p.numFiles+1 > p.maxFiles {
+		return false
 	}
 
 	return true
