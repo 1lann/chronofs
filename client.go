@@ -32,7 +32,7 @@ type FSClient interface {
 	DeleteDir(ctx context.Context, fileID int64) error
 	RenameFile(ctx context.Context, fileID int64, newParent int64, newName string) error
 	ReadDir(ctx context.Context, dirID int64) ([]FileMeta, error)
-	Sync(ctx context.Context) error
+	Sync(ctx context.Context, final ...bool) error
 	ReadFile(ctx context.Context, fileID int64, offset int64, data []byte) (int, error)
 	WriteFile(ctx context.Context, fileID int64, offset int64, data []byte) error
 	DumpFileNoCache(ctx context.Context, fileID int64, wr io.Writer) (int64, error)
