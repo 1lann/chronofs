@@ -24,6 +24,7 @@ var pprofPort = flag.Int("pprof", 0, "Port to bind a pprof HTTP server on. Set t
 var logFile = flag.String("log", "", "Log file to write to. Disabled by default.")
 var cacheBytes = flag.Int("cache-bytes", 500e6, "Number of bytes to cache file page data in memory.")
 var cacheFiles = flag.Int("cache-files", 50000, "Number of files to cache metadata in memory.")
+var syncPeriod = flag.Duration("period", 2*time.Second, "Period to sync the database.")
 
 func main() {
 	flag.Parse()
@@ -89,7 +90,7 @@ func main() {
 	syncDone := make(chan struct{})
 
 	go func() {
-		t := time.NewTicker(2 * time.Second)
+		t := time.NewTicker(syncPeriod)
 
 		defer func() {
 			t.Stop()
