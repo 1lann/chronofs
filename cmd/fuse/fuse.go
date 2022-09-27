@@ -5,7 +5,6 @@ import (
 	"flag"
 	"log"
 	"net/http"
-	"net/http/pprof"
 	"net/url"
 	"os"
 	"os/signal"
@@ -106,7 +105,7 @@ func main() {
 		port := strconv.Itoa(*pprofPort)
 		go func() {
 			log.Println("running pprof server on 127.0.0.1:" + port)
-			err := http.ListenAndServe("127.0.0.1:"+port, http.HandlerFunc(pprof.Index))
+			err := http.ListenAndServe("127.0.0.1:"+port, nil)
 			if err != nil {
 				log.Println("pprof server error:", err)
 			}
