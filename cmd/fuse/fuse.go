@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log"
 	"net/http"
 	"net/http/pprof"
@@ -12,8 +13,6 @@ import (
 	"strconv"
 	"time"
 
-	"flag"
-
 	"github.com/1lann/chronofs"
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/jmoiron/sqlx"
@@ -23,7 +22,9 @@ import (
 var pprofPort = flag.Int("pprof", 0, "Port to bind a pprof HTTP server on. Set to 0 to disable.")
 
 func main() {
-	if len(os.Args) < 3 {
+	flag.Parse()
+
+	if len(flag.Args()) < 3 {
 		log.Fatalln("Usage: fuse <database> <mountpoint>")
 	}
 
@@ -39,7 +40,7 @@ func main() {
 
 	u := url.URL{
 		Scheme:   "file",
-		Opaque:   os.Args[1],
+		Opaque:   flag.Arg(0),
 		RawQuery: q.Encode(),
 	}
 
@@ -96,7 +97,7 @@ func main() {
 		}
 	}()
 
-	server, err := fs.Mount(os.Args[2], chronofs.NewRootNode(client, currentUser), opts)
+	server, err := fs.Mount(flag.Arg(1), chronofs.NewRootNode(client, currentUser), opts)
 	if err != nil {
 		log.Fatalf("Mount fail: %v\n", err)
 	}
