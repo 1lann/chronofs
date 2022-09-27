@@ -605,6 +605,10 @@ func (c *SQLBackedClient) Sync(ctx context.Context, final ...bool) error {
 					return errors.Wrap(err, "DeletePage")
 				}
 			} else {
+				if len(page.Data) == 0 {
+					continue
+				}
+
 				err := q.UpsertPage(ctx, store.UpsertPageParams{
 					FileID:        page.Key.FileID,
 					PageNum:       int64(page.Key.PageNum),
