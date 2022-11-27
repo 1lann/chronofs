@@ -325,7 +325,14 @@ func (p *PagePool) markActivity(page *Page) {
 // Evict the least recently used pages to make space for bytes. Assumes lock is held.
 func (p *PagePool) makeSpace(bytes uint64) bool {
 	current := p.dll.Front()
-	for p.size+bytes > p.maxSize && current != nil {
+	it := 0
+	maxIt := len(p.pages)
+	if maxIt > 10 {
+		// limit page eviction to half of the pool, because later pages are likely still in-use
+		maxIt /= 2
+	}
+	for p.size+bytes > p.maxSize && current != nil && it <= maxIt {
+		it++
 		next := current.Next()
 		page := current.Value.(*Page)
 		if page.dirty || page.pending {

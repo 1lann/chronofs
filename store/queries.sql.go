@@ -272,10 +272,7 @@ func (q *Queries) UpdateFile(ctx context.Context, arg UpdateFileParams) error {
 }
 
 const upsertPage = `-- name: UpsertPage :exec
-INSERT INTO pages (file_id, page_num, page_size_power, data)
-VALUES (?, ?, ?, ?)
-ON CONFLICT (file_id, page_num, page_size_power) DO UPDATE SET
-    data = excluded.data
+REPLACE INTO pages (file_id, page_num, page_size_power, data) VALUES (?, ?, ?, ?)
 `
 
 type UpsertPageParams struct {

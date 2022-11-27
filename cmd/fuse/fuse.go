@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"os/user"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -90,7 +91,7 @@ func main() {
 	syncDone := make(chan struct{})
 
 	go func() {
-		t := time.NewTicker(syncPeriod)
+		t := time.NewTicker(*syncPeriod)
 
 		defer func() {
 			t.Stop()
@@ -117,7 +118,17 @@ func main() {
 		}
 	}()
 
-	server, err := fs.Mount(flag.Arg(1), chronofs.NewRootNode(client, currentUser), opts)
+	server, err := fs.Mount(flag.Arg(1), chronofs.NewRootNode(
+		client,
+		currentUser,
+		func(f *chronofs.FileMeta) time.Duration {
+			if filepath.Ext(f.Name) == ".mca" {
+				return time.Second
+			}
+
+			return 0
+		},
+	), opts)
 	if err != nil {
 		log.Fatalf("Mount fail: %v\n", err)
 	}

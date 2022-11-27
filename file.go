@@ -32,7 +32,7 @@ type RWFileHandle interface {
 var _ = (RWFileHandle)((*FileHandle)(nil))
 
 func (f *FileHandle) Release(ctx context.Context) syscall.Errno {
-	return 0
+	return f.Fsync(ctx, 0)
 }
 
 func (f *FileHandle) Getattr(ctx context.Context, out *fuse.AttrOut) syscall.Errno {
@@ -50,7 +50,7 @@ func (f *FileHandle) Read(ctx context.Context, dest []byte, off int64) (fuse.Rea
 }
 
 func (f *FileHandle) Write(ctx context.Context, data []byte, off int64) (written uint32, errno syscall.Errno) {
-	err := f.Node.context.WriteFile(context.Background(), f.Node.fileID, off, data)
+	err := f.Node.context.WriteFile(context.Background(), f.Node.fileID, off, data, f.context.fsyncTimeout)
 	if err != nil {
 		return 0, errToSyscall(err)
 	}
@@ -92,8 +92,17 @@ func (f *FileHandle) Lseek(ctx context.Context, off uint64, whence uint32) (uint
 		return 0, errToSyscall(err)
 	}
 
-	if whence&unix.SEEK_HOLE == unix.SEEK_HOLE {
-		return uint64(fileMeta.Length), 0
+	switch whence {
+	case unix.SEEK_SET:
+		break
+	case unix.SEEK_CUR:
+		panic("unsupported SEEK_CUR")
+	case unix.SEEK_END:
+		off += uint64(fileMeta.Length)
+	case unix.SEEK_HOLE:
+		off = uint64(fileMeta.Length)
+	case unix.SEEK_DATA:
+		break
 	}
 
 	return off, 0
@@ -104,7 +113,7 @@ func (f *FileHandle) Flush(ctx context.Context) syscall.Errno {
 }
 
 func (f *FileHandle) Fsync(ctx context.Context, flags uint32) syscall.Errno {
-	return 0
+	return errToSyscall(f.Node.context.Fsync(context.Background(), f.Node.fileID))
 }
 
 func (f *FileHandle) Setattr(ctx context.Context, in *fuse.SetAttrIn, out *fuse.AttrOut) syscall.Errno {

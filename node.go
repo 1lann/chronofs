@@ -15,7 +15,8 @@ import (
 
 type NodeContext struct {
 	FSClient
-	user *user.User
+	user         *user.User
+	fsyncTimeout func(*FileMeta) time.Duration
 }
 
 type Node struct {
@@ -25,17 +26,20 @@ type Node struct {
 	context  *NodeContext
 }
 
-func NewRootNode(client FSClient, user *user.User) *Node {
-	return NewNodeWithRoot(client, user, RootID)
+func NewRootNode(client FSClient, user *user.User,
+	fsyncTimeout func(*FileMeta) time.Duration) *Node {
+	return NewNodeWithRoot(client, user, RootID, fsyncTimeout)
 }
 
-func NewNodeWithRoot(client FSClient, user *user.User, rootID int64) *Node {
+func NewNodeWithRoot(client FSClient, user *user.User, rootID int64,
+	fsyncTimeout func(*FileMeta) time.Duration) *Node {
 	return &Node{
 		fileID:   rootID,
 		fileType: FileTypeDirectory,
 		context: &NodeContext{
-			FSClient: client,
-			user:     user,
+			FSClient:     client,
+			user:         user,
+			fsyncTimeout: fsyncTimeout,
 		},
 	}
 }

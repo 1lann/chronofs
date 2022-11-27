@@ -35,6 +35,10 @@ type FileMeta struct {
 	pending     bool
 	tombstone   bool
 	element     *list.Element
+
+	metaSyncLock sync.Mutex
+	syncLock     sync.RWMutex
+	syncSignal   func()
 }
 
 func (f *FileMeta) Mode() uint32 {
@@ -286,10 +290,12 @@ func (p *FileMetaPool) SwapDirtyFiles() []FileMeta {
 
 	files := make([]FileMeta, len(p.dirtyFiles))
 
-	for i, page := range p.dirtyFiles {
-		page.dirty = false
-		page.pending = true
-		files[i] = *page
+	for i, file := range p.dirtyFiles {
+		file.syncLock.Lock()
+		file.dirty = false
+		file.pending = true
+		files[i] = *file
+		file.syncLock.Unlock()
 	}
 
 	p.pendingFiles = append(p.pendingFiles, p.dirtyFiles...)
@@ -330,11 +336,56 @@ func (p *FileMetaPool) markDirty(file *FileMeta) {
 		file.dirty = true
 		p.dirtyFiles = append(p.dirtyFiles, file)
 	}
-	p.MarkWrite(file)
 }
 
-func (p *FileMetaPool) MarkWrite(file *FileMeta) {
+func (p *FileMetaPool) MarkWrite(file *FileMeta, fsyncTimeout time.Duration) {
+	p.markDirty(file)
+
 	file.LastWrite = time.Now().Round(time.Millisecond)
+
+	if fsyncTimeout > 0 {
+		signal := make(chan struct{}, 1)
+		func() {
+			file.metaSyncLock.Lock()
+			defer file.metaSyncLock.Unlock()
+
+			if file.syncSignal != nil {
+				file.syncSignal()
+			}
+
+			file.syncSignal = func() {
+				select {
+				case signal <- struct{}{}:
+				default:
+				}
+			}
+		}()
+
+		file.syncLock.RLock()
+
+		go func() {
+			select {
+			case <-signal:
+				break
+			case <-time.After(fsyncTimeout):
+				break
+			}
+
+			file.syncLock.RUnlock()
+		}()
+	}
+}
+
+func (p *FileMetaPool) Fsync(file *FileMeta) error {
+	file.metaSyncLock.Lock()
+	defer file.metaSyncLock.Unlock()
+
+	if file.syncSignal != nil {
+		file.syncSignal()
+		file.syncSignal = nil
+	}
+
+	return nil
 }
 
 func (p *FileMetaPool) MarkRead(file *FileMeta) {
@@ -348,7 +399,11 @@ func (p *FileMetaPool) MarkRead(file *FileMeta) {
 // Evict the least recently used files to make space for bytes. Assumes lock is held.
 func (p *FileMetaPool) makeSpace() bool {
 	current := p.dll.Front()
-	for p.numFiles+1 > p.maxFiles && current != nil {
+	it := uint64(0)
+	// limit file eviction to half of the pool, because later files are likely still in-use
+	maxIt := p.maxFiles / 2
+	for p.numFiles+1 > p.maxFiles && current != nil && it <= maxIt {
+		it++
 		next := current.Next()
 		file := current.Value.(*FileMeta)
 		if file.dirty || file.pending {

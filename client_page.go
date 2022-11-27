@@ -168,7 +168,7 @@ func (c *SQLBackedClient) writePage(ctx context.Context, fileID int64, page uint
 	return nil
 }
 
-func (c *SQLBackedClient) writeFileNoLock(ctx context.Context, fileMeta *FileMeta, offset int64, data []byte) error {
+func (c *SQLBackedClient) writeFileNoLock(ctx context.Context, fileMeta *FileMeta, offset int64, data []byte, fsyncTimeout time.Duration) error {
 	if fileMeta.FileType != FileTypeRegular {
 		return ErrNotSupported
 	}
@@ -202,7 +202,7 @@ func (c *SQLBackedClient) writeFileNoLock(ctx context.Context, fileMeta *FileMet
 		bytesWritten += expectedPageLength
 	}
 
-	c.FileMetaPool.MarkWrite(fileMeta)
+	c.FileMetaPool.MarkWrite(fileMeta, fsyncTimeout)
 
 	// determine if file needs to be extended
 	if maxLength > fileMeta.Length {
@@ -217,7 +217,8 @@ func (c *SQLBackedClient) writeFileNoLock(ctx context.Context, fileMeta *FileMet
 	return nil
 }
 
-func (c *SQLBackedClient) WriteFile(ctx context.Context, fileID int64, offset int64, data []byte) error {
+func (c *SQLBackedClient) WriteFile(ctx context.Context, fileID int64, offset int64, data []byte,
+	f func(*FileMeta) time.Duration) error {
 	if offset < 0 {
 		return errors.New("offset must be positive")
 	}
@@ -234,5 +235,21 @@ func (c *SQLBackedClient) WriteFile(ctx context.Context, fileID int64, offset in
 		return err
 	}
 
-	return c.writeFileNoLock(ctx, fileMeta, offset, data)
+	return c.writeFileNoLock(ctx, fileMeta, offset, data, f(fileMeta))
+}
+
+func (c *SQLBackedClient) Fsync(ctx context.Context, fileID int64) error {
+	lock := c.getFileLock(fileID)
+	lock.RLock()
+	defer func() {
+		lock.RUnlock()
+		lock.Release()
+	}()
+
+	fileMeta, err := c.GetFile(ctx, fileID)
+	if err != nil {
+		return err
+	}
+
+	return c.FileMetaPool.Fsync(fileMeta)
 }

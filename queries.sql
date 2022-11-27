@@ -44,10 +44,7 @@ INSERT INTO files (
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING file_id;
 
 -- name: UpsertPage :exec
-INSERT INTO pages (file_id, page_num, page_size_power, data)
-VALUES (?, ?, ?, ?)
-ON CONFLICT (file_id, page_num, page_size_power) DO UPDATE SET
-    data = excluded.data;
+REPLACE INTO pages (file_id, page_num, page_size_power, data) VALUES (?, ?, ?, ?);
 
 -- name: GetPage :one
 SELECT data FROM pages WHERE file_id = ? AND page_num = ? AND page_size_power = ?;

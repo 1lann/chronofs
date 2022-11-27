@@ -22,6 +22,7 @@ const RootID = 2
 
 type FSClient interface {
 	GetFile(ctx context.Context, fileID int64) (*FileMeta, error)
+	Fsync(ctx context.Context, fileID int64) error
 	LookupFileInDir(ctx context.Context, dirID int64, name string) (int64, error)
 	LookupFileByPath(ctx context.Context, dirID int64, name string) (int64, error)
 	SetFileAttrs(ctx context.Context, fileID int64, f func(*FileMeta)) error
@@ -34,7 +35,8 @@ type FSClient interface {
 	ReadDir(ctx context.Context, dirID int64) ([]FileMeta, error)
 	Sync(ctx context.Context, final ...bool) error
 	ReadFile(ctx context.Context, fileID int64, offset int64, data []byte) (int, error)
-	WriteFile(ctx context.Context, fileID int64, offset int64, data []byte) error
+	WriteFile(ctx context.Context, fileID int64, offset int64, data []byte,
+		fsyncTimeout func(*FileMeta) time.Duration) error
 	DumpFileNoCache(ctx context.Context, fileID int64, wr io.Writer) (int64, error)
 }
 
@@ -291,7 +293,7 @@ func (c *SQLBackedClient) SetFileLength(ctx context.Context, fileID int64, lengt
 
 	if length < fileMeta.Length {
 		// zero pages
-		err = c.writeFileNoLock(ctx, fileMeta, length, make([]byte, fileMeta.Length-length))
+		err = c.writeFileNoLock(ctx, fileMeta, length, make([]byte, fileMeta.Length-length), 0)
 		if err != nil {
 			return err
 		}
